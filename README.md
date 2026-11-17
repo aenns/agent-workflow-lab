@@ -6,6 +6,14 @@ The lab compares three ways to run the same AI chat turn. The Go loop runs in me
 
 Use the [quick start](#quick-start) to send an inventory question and inspect the MCP calls. Then try the [Temporal worker restart demo](#demo-worker-downtime) to see the same background job wait while the worker is offline, complete when it returns, and surface an in-app notification. The report shows the tool results, model, token counts, and correlated logs.
 
+## macOS shortcuts
+
+In Finder, open the project folder and double-click **Start Lab.command**. It opens Docker Desktop and Ollama if needed, starts PostgreSQL, Temporal, the Go API, the worker, and the web app, then opens the lab in Chrome. Install the prerequisites below and pull the model once before using the shortcut. Leave the launcher Terminal window open while the lab runs.
+
+Double-click **Stop Lab.command** or press **Control+C** in the launcher Terminal window to stop the lab processes and containers. Checkpoints and workflow history are retained. Chrome, Docker Desktop, and Ollama stay open because other apps may use them. If you started the API or web app manually, stop those terminals before using the shortcuts.
+
+If macOS prompts for access to the project in Documents, allow Terminal to access that folder. If the launcher exits before Chrome opens, check `.lab/launcher.log` from the project folder.
+
 ## Quick start
 
 Install Go 1.27+, Node.js 24 with npm, and Ollama. Open the Ollama app, then run `ollama pull qwen3:14b` if the model is missing from `ollama list`.
