@@ -8,7 +8,7 @@ const queues = {
   typescript: 'workflow-lab-typescript',
   python: 'workflow-lab-python',
 };
-const state = fileURLToPath(new URL('../../.lab/launcher/', import.meta.url));
+const launcherDirectory = fileURLToPath(new URL('../../.lab/launcher/', import.meta.url));
 const route = /^\/__lab\/temporal-worker\/(go|typescript|python)(?:\/(start|stop))?$/;
 
 function send(response, status, data) {
@@ -25,7 +25,11 @@ function readIdentity(path) {
   }
 }
 
-export function workerControl() {
+export function workerControl({
+  state = launcherDirectory,
+  connect = (options) => Connection.connect(options),
+  enabled = process.env.LAB_WORKER_CONTROL === '1',
+} = {}) {
   let connection;
   return {
     name: 'lab-worker-control',
@@ -40,8 +44,7 @@ export function workerControl() {
         const [, backend, action] = match;
         const key = join(state, 'worker-' + backend);
         // A manually started dev server can inspect queues without managing processes.
-        const managed = process.env.LAB_WORKER_CONTROL === '1' &&
-          existsSync(state) && !existsSync(join(state, 'stop'));
+        const managed = enabled && existsSync(state) && !existsSync(join(state, 'stop'));
         try {
           if (action) {
             // Browser mutations must originate from this loopback dev server.
@@ -61,7 +64,7 @@ export function workerControl() {
           const identity = managed ? readIdentity(key + '.identity') : '';
           const details = { managed, desired, queue: queues[backend] };
           try {
-            connection ??= Connection.connect({
+            connection ??= connect({
               address: process.env.TEMPORAL_ADDR || '127.0.0.1:7233', connectTimeout: '2s',
             }).catch((error) => {
               connection = undefined;

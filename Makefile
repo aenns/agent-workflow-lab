@@ -1,4 +1,4 @@
-.PHONY: install install-py dev-api dev-web test build
+.PHONY: install install-py dev-api dev-web test test-integration build
 
 PYTHON ?= python3
 PY_API = apps/api-py
@@ -19,7 +19,11 @@ dev-web:
 test:
 	go test ./apps/api/...
 	npm test --workspace apps/api-ts
+	npm test --workspace apps/web
 	cd $(PY_API) && .venv/bin/python -m unittest discover -s tests
+
+test-integration:
+	$(PYTHON) tests/integration.py
 
 build:
 	npm run build

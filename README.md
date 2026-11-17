@@ -296,7 +296,13 @@ make build
 
 - `GET /api/health` checks the selected API process. `GET /api/ready` checks Ollama, the configured model, and MCP tool discovery, returning HTTP 503 when one of those dependencies is unavailable. The state-machine chat request checks PostgreSQL when opening a run.
 - `POST /api/chat` accepts alternating user and assistant messages ending with a user message. Set `"engine":"state-machine"` in the request to use the state machine. Use `"engine":"temporal"` for Temporal. The default is `"engine":"loop"`. The response includes `engine` and `message`, plus a `tools` array when calls were made and a `states` array for the state machine. The request is limited to 512 KiB and 41 messages, with an 8,000-byte limit per user message.
-- `make test` runs the Go tests and integration tests for TypeScript and Python. These check the served spec, a chained tool call through the MCP child, token counts, and correlation IDs with simulated Ollama responses. `make build` compiles Go, type-checks TypeScript, compiles the Python modules, and bundles the frontend. Run `make install install-py` before these checks. Run `npm run preview --workspace apps/web` to serve the built frontend locally on port 4173 with the Go API running.
+- `make test` runs the Go tests and integration tests for TypeScript and Python. These check the served spec, a chained tool call through the MCP child, token counts, and correlation IDs with simulated Ollama responses. The web tests cover worker status, stale poller identities, and which requests can change launcher state. `make build` compiles Go, type-checks TypeScript, compiles the Python modules, and bundles the frontend. Run `make install install-py` before these checks. Run `npm run preview --workspace apps/web` to serve the built frontend locally on port 4173 with the Go API running.
+
+### Run the recovery integration tests
+
+Start Docker Desktop, then run `make install install-py` and `make test-integration`. The suite runs Go, TypeScript, and Python through the same recovery scenarios. It simulates an Ollama failure after a real MCP call, restarts the API, verifies checkpoint recovery, and checks that the same Temporal job completes after its worker starts. It also checks duplicate submissions, rejected conflicting input, and correlated worker and MCP logs.
+
+The suite uses a simulated Ollama server and disposable PostgreSQL and Temporal containers. Docker assigns separate ports, and the suite removes its test project and volumes at the end. GitHub Actions runs the same suite.
 
 ## Repository layout
 
