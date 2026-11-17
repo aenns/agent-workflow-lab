@@ -1,0 +1,7 @@
+package: contract
+output: routes.gen.go
+generate:
+  std-http-server: true
+  models: true
+output-options:
+  skip-prune: true

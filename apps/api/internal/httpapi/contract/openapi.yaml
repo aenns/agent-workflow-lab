@@ -1,0 +1,525 @@
+openapi: 3.1.1
+info:
+  title: Local AI Agent and MCP Workflow Lab API
+  version: 1.0.0
+  description: Local chat, tool execution, and service health for the workflow lab.
+servers:
+  - url: /
+    description: Same origin as the Go API or Vite proxy
+paths:
+  /api/openapi.yaml:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: getOpenAPI
+      summary: Download the API contract
+      responses:
+        '200':
+          description: The OpenAPI document
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /api/health:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: getHealth
+      summary: Check whether the API process is alive
+      responses:
+        '200':
+          description: The API is running
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/ready:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: getReadiness
+      summary: Check the configured Ollama model and MCP discovery
+      description: The state-machine and Temporal engines check their own dependencies when handling a chat turn.
+      responses:
+        '200':
+          description: Ollama and MCP are ready
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '503':
+          description: Ollama or MCP is unavailable
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnavailableReadiness'
+  /api/chat:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    post:
+      operationId: postChat
+      summary: Run one chat turn with the selected engine
+      description: |
+        Submit the conversation so far and wait for the complete reply. The JSON
+        request body is limited to 512 KiB. The transcript alternates user and
+        assistant messages, starts and ends with a user message, and contains at
+        most 41 messages. User messages are limited to 8,000 UTF-8 bytes each.
+        State-machine and Temporal clients can retry with the same run ID and
+        original messages to resume or retrieve the saved result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+            example:
+              engine: state-machine
+              messages:
+                - role: user
+                  content: Is LAMP-42 in stock, and what are the pickup hours at its warehouse?
+      responses:
+        '200':
+          description: Assistant reply, with any tool trace
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            X-Run-ID:
+              $ref: '#/components/headers/RunID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatReply'
+        '400':
+          description: Invalid JSON, messages, engine, or run ID
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Run ID is active or belongs to different messages
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            X-Run-ID:
+              $ref: '#/components/headers/RunID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: Request body exceeds 512 KiB
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Model or workflow failure, or tool call limit exceeded
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            X-Run-ID:
+              $ref: '#/components/headers/RunID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: MCP, PostgreSQL, or Temporal is unavailable
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            X-Run-ID:
+              $ref: '#/components/headers/RunID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '504':
+          description: The API stopped waiting. A Temporal run may continue in the background.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            X-Run-ID:
+              $ref: '#/components/headers/RunID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/tools:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: getTools
+      summary: Discover tools from the MCP inventory server
+      description: Lists tools over the MCP stdio session and returns their input schemas.
+      responses:
+        '200':
+          description: Discovered MCP tools
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MCPTool'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+  /api/logs:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: getLogs
+      summary: List recent local process logs
+      description: Up to 500 recent JSON events from the API, MCP child processes, and Temporal worker.
+      responses:
+        '200':
+          description: Recent structured log records, newest first
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogEntry'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+
+  /api/jobs:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: listJobs
+      summary: List recent background inventory audits
+      responses:
+        '200':
+          description: Up to 50 recent Temporal inventory jobs
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Job'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+    post:
+      operationId: postJob
+      summary: Submit an inventory audit to the background worker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobRequest'
+            example:
+              prompt: Check stock and pickup options for LAMP-42 and MUG-17 this week.
+      responses:
+        '202':
+          description: Workflow accepted. Inspect its report at the Location URL.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/JobError'
+        '409':
+          $ref: '#/components/responses/JobError'
+        '413':
+          $ref: '#/components/responses/JobError'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+  /api/jobs/{jobId}:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+      - name: jobId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getJob
+      summary: Inspect an inventory audit and its completed report
+      responses:
+        '200':
+          description: Current status and the report when complete
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/JobError'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+
+components:
+  responses:
+    JobError:
+      description: Invalid request, missing job, or job ID conflict
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    DiagnosticsUnavailable:
+      description: The diagnostic data source is unavailable
+      headers:
+        X-Correlation-ID:
+          $ref: '#/components/headers/CorrelationID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  parameters:
+    CorrelationID:
+      in: header
+      name: X-Correlation-ID
+      description: Optional request ID. The API generates one when the supplied value is missing or invalid.
+      schema:
+        type: string
+      example: logging-demo-0001
+  headers:
+    CorrelationID:
+      description: Accepted or generated correlation ID
+      required: true
+      schema:
+        $ref: '#/components/schemas/RunIdentifier'
+    RunID:
+      description: Retry ID for State machine or Temporal. Present after the API accepts a durable chat request.
+      schema:
+        $ref: '#/components/schemas/RunIdentifier'
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    Readiness:
+      type: object
+      required: [status, model]
+      properties:
+        status:
+          type: string
+          const: ready
+        model:
+          type: string
+          example: qwen3:14b
+    UnavailableReadiness:
+      type: object
+      required: [status, model, error]
+      properties:
+        status:
+          type: string
+          const: unavailable
+        model:
+          type: string
+        error:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Engine:
+      type: string
+      enum: [loop, state-machine, temporal]
+    RunIdentifier:
+      type: string
+      pattern: '^[a-zA-Z0-9_-]{16,64}$'
+    Message:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          minLength: 1
+          description: Nonblank message text.
+    ChatRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 41
+          items:
+            $ref: '#/components/schemas/Message'
+        engine:
+          description: Omit this field to use the Go loop.
+          default: loop
+          allOf:
+            - $ref: '#/components/schemas/Engine'
+        runId:
+          description: Optional retry ID for State machine or Temporal. The Go loop ignores this field.
+          allOf:
+            - $ref: '#/components/schemas/RunIdentifier'
+    ChatReply:
+      type: object
+      required: [engine, message]
+      properties:
+        usage:
+          type: array
+          description: Ollama token counts for each completed model call, in order. A count can be absent when the model server does not report it.
+          items:
+            $ref: '#/components/schemas/TokenUsage'
+        engine:
+          $ref: '#/components/schemas/Engine'
+        message:
+          $ref: '#/components/schemas/AssistantMessage'
+        runId:
+          type: string
+          description: State-machine run ID or Temporal workflow ID (prefixed with lab-chat-).
+        states:
+          type: array
+          description: Present for State machine replies.
+          items:
+            type: string
+            enum: [asking_model, running_tools, completed]
+        tools:
+          type: array
+          description: Tool events in execution order. Omitted when no calls were made.
+          items:
+            $ref: '#/components/schemas/ToolEvent'
+    TokenUsage:
+      type: object
+      properties:
+        inputTokens:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Prompt tokens reported by Ollama for this model call.
+        outputTokens:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Generated tokens reported by Ollama for this model call.
+    AssistantMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          const: assistant
+        content:
+          type: string
+          minLength: 1
+    ToolEvent:
+      type: object
+      required: [name, arguments, result, isError, durationMs]
+      properties:
+        name:
+          type: string
+        arguments:
+          type: [object, array, string, number, boolean, 'null']
+          x-go-type: 'interface{}'
+          description: Raw JSON arguments proposed by the model, including malformed values on failed calls.
+        result:
+          type: string
+        isError:
+          type: boolean
+        durationMs:
+          type: integer
+          format: int64
+          minimum: 0
+    MCPTool:
+      type: object
+      required: [name, description, inputSchema]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        inputSchema:
+          type: object
+          additionalProperties: true
+          x-go-type: 'interface{}'
+    LogEntry:
+      type: object
+      additionalProperties: true
+      required: [time, msg]
+      properties:
+        time:
+          type: string
+          format: date-time
+        msg:
+          type: string
+        level:
+          type: string
+        service:
+          type: string
+        component:
+          type: string
+        correlation_id:
+          type: string
+    JobRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+          description: Standalone inventory question. Maximum 8,000 UTF-8 bytes.
+        key:
+          $ref: '#/components/schemas/RunIdentifier'
+    Job:
+      type: object
+      required: [id, prompt, status, startedAt]
+      properties:
+        id:
+          type: string
+        prompt:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed]
+          description: Running includes jobs waiting for a worker.
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+        report:
+          $ref: '#/components/schemas/ChatReply'
