@@ -1,4 +1,4 @@
-import { apiPath, backendLabels, type Backend } from './backend';
+import { apiPath, backendLabels, jobCorrelationId, readBackend, type Backend } from './backend';
 import { Database } from './database';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -7,6 +7,7 @@ import { Jobs, useJobs, type Job } from './jobs';
 import { TokenTrace, ToolTrace, type TokenUsage, type ToolEvent } from './traces';
 import { APIReference, Logs, MCPTools } from './diagnostics';
 import { correlatedFetch, correlationHeader } from './telemetry';
+import { WorkerControl } from './worker-control';
 import './style.css';
 
 type Engine = 'loop' | 'state-machine' | 'temporal';
@@ -65,7 +66,7 @@ function App() {
   const jobDraft = useRef<{ prompt: string; model: string; key: string }>(null);
   const [savedTurn, setSavedTurn] = useState(readSavedTurn);
   const [backend, setBackend] = useState<Backend>(() =>
-    savedTurn?.backend ?? (sessionStorage.getItem('workflow-lab:backend') === 'typescript' ? 'typescript' : 'go'));
+    savedTurn?.backend ?? readBackend());
   const jobFeed = useJobs(backend);
   const firstUnread = jobFeed.unread[0];
   // React rerenders when a state setter runs. These initializers restore
@@ -84,6 +85,12 @@ function App() {
   const [readiness, setReadiness] = useState<Readiness>({ ready: false, detail: 'Checking connection…' });
   const composer = useRef<HTMLTextAreaElement>(null);
   const latest = useRef<HTMLDivElement>(null);
+  // Readiness checks the backend's configured default. The label follows the chat picker.
+  const sidebarModel = model || catalog?.defaultModel || readiness.model || 'Local model';
+  const selectedModelUnavailable = !!model && !!catalog && !catalog.models.includes(model);
+  const sidebarStatus = selectedModelUnavailable
+    ? 'Selected model unavailable'
+    : readiness.ready ? 'Backend ready' : readiness.detail;
   const promptBytes = new TextEncoder().encode(prompt.trim()).length;
   const full = messages.length >= 42;
   // Saved run IDs belong to the backend and engine that created them.
@@ -208,7 +215,7 @@ function App() {
       const response = await correlatedFetch(apiPath(backend, '/api/jobs'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: text, key, model: model || undefined }),
-      }, `${backend === 'typescript' ? 'lab-ts-job' : 'lab-job'}-${key}`, { backend });
+      }, jobCorrelationId(backend, key), { backend });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.id) throw new Error(result?.error || 'Could not start the background job.');
       const job = result as Job;
@@ -275,9 +282,9 @@ function App() {
         </nav>
         <div className="sidebar-footer">
           <div className="connection">
-            <span className={`connection-dot ${readiness.ready ? 'online' : ''}`} aria-hidden="true" />
-            <span role="status">{readiness.model ? <strong>{readiness.model}</strong> : <strong>Local model</strong>}
-              <span>{readiness.detail}</span>
+            <span className={`connection-dot ${readiness.ready && !selectedModelUnavailable ? 'online' : ''}`} aria-hidden="true" />
+            <span role="status"><strong>{sidebarModel}</strong>
+              <span>{sidebarStatus}</span>
             </span>
           </div>
           <button type="button" onClick={() => void checkReadiness()}>Check connection</button>
@@ -298,6 +305,9 @@ function App() {
             <button type="button" onClick={() => openJob(firstUnread)}>Open job</button>
           </div>}
         </div>
+        {/* Keep one control mounted when submitting a background job opens Jobs. */}
+        {(view === 'jobs' || (view === 'chat' && engine === 'temporal')) &&
+          <WorkerControl key={backend} backend={backend} waitingForReply={view === 'chat' && pending} />}
         {view === 'jobs' && <Jobs key={backend} backend={backend} jobs={jobFeed.jobs} unread={jobFeed.unread} error={jobFeed.error}
           selectedId={selectedJob} onSelect={openJob} onLogs={openLogs} />}
         {openedLibrary && <div hidden={view !== 'models'}>

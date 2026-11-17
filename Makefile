@@ -1,7 +1,14 @@
-.PHONY: install dev-api dev-web test build
+.PHONY: install install-py dev-api dev-web test build
+
+PYTHON ?= python3
+PY_API = apps/api-py
 
 install:
 	npm ci
+
+install-py:
+	$(PYTHON) -m venv $(PY_API)/.venv
+	$(PY_API)/.venv/bin/python -m pip install -r $(PY_API)/requirements.txt
 
 dev-api:
 	go run ./apps/api/cmd/api
@@ -12,10 +19,12 @@ dev-web:
 test:
 	go test ./apps/api/...
 	npm test --workspace apps/api-ts
+	cd $(PY_API) && .venv/bin/python -m unittest discover -s tests
 
 build:
 	npm run build
 	go build ./apps/api/...
+	cd $(PY_API) && .venv/bin/python -m compileall -q workflow_lab
 
 .PHONY: dev-db stop-db
 dev-db:
@@ -44,3 +53,10 @@ dev-api-ts:
 
 dev-worker-ts:
 	npm run worker --workspace apps/api-ts
+
+.PHONY: dev-api-py dev-worker-py
+dev-api-py:
+	cd $(PY_API) && .venv/bin/python -m workflow_lab.server
+
+dev-worker-py:
+	cd $(PY_API) && .venv/bin/python -m workflow_lab.worker

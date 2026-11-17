@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"agent-workflow-lab/apps/api/internal/chat"
@@ -191,7 +192,7 @@ func inventoryAuditWorkflow(ctx workflow.Context, input workflowInput) (chat.Rep
 }
 
 func (a Agent) Worker(c client.Client) worker.Worker {
-	w := worker.New(c, temporalQueue, worker.Options{WorkerStopTimeout: 2 * time.Second})
+	w := worker.New(c, temporalQueue, worker.Options{Identity: os.Getenv("LAB_WORKER_IDENTITY"), WorkerStopTimeout: 2 * time.Second})
 	w.RegisterWorkflowWithOptions(inventoryWorkflow, workflow.RegisterOptions{Name: temporalWorkflow})
 	w.RegisterWorkflowWithOptions(inventoryAuditWorkflow, workflow.RegisterOptions{Name: auditWorkflow})
 	w.RegisterActivityWithOptions(a.discover, activity.RegisterOptions{Name: discoverActivity})

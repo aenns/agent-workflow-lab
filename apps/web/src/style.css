@@ -65,6 +65,7 @@ main { width: 100%; max-width: 1230px; padding: clamp(20px, 4vw, 52px); margin: 
 }
 .panel-heading p, .tool-card p { color: var(--muted); font-size: .88rem; margin-top: 4px; }
 .chat-controls, .inline-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.worker-control { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; font-size: .85rem; color: var(--muted); }
 .chat-controls label, .filters label { color: var(--muted); font-size: .81rem; font-weight: 600; }
 .chat-controls select { font-size: .85rem; }
 .transcript { min-height: 335px; max-height: 55vh; overflow: auto; padding: 20px clamp(14px, 3vw, 24px); }

@@ -12,7 +12,7 @@ try {
   try {
     const service = 'temporal-worker-typescript';
     const worker = await Worker.create({
-      connection, taskQueue, workflowsPath: fileURLToPath(new URL('./workflows.ts', import.meta.url)),
+      identity: process.env.LAB_WORKER_IDENTITY, connection, taskQueue, workflowsPath: fileURLToPath(new URL('./workflows.ts', import.meta.url)),
       activities: {
         ask: (turn: Turn, correlationId: string) =>
           askModel(tools, turn, { service, correlationId }, Context.current().cancellationSignal),

@@ -18,7 +18,7 @@ const maxEntries = 500
 
 type Store struct{ Dir string }
 
-var sources = []string{"api", "api-mcp", "temporal-worker", "worker-mcp", "api-typescript", "mcp-typescript", "mcp-worker-typescript", "temporal-worker-typescript"}
+var sources = []string{"api", "api-mcp", "temporal-worker", "worker-mcp", "api-typescript", "mcp-typescript", "mcp-worker-typescript", "temporal-worker-typescript", "api-python", "mcp-python", "mcp-worker-python", "temporal-worker-python"}
 
 type Writer struct {
 	mu   sync.Mutex
