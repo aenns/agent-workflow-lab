@@ -325,7 +325,7 @@ paths:
     get:
       operationId: getLogs
       summary: List recent local process logs
-      description: Up to 500 recent JSON events from the API, MCP child processes, and Temporal worker.
+      description: Up to 500 recent JSON events from the APIs, MCP child processes, and Temporal workers.
       responses:
         '200':
           description: Recent structured log records, newest first
@@ -523,12 +523,12 @@ components:
           items:
             $ref: '#/components/schemas/Message'
         engine:
-          description: Omit this field to use the Go loop.
+          description: Omit this field to use the direct loop.
           default: loop
           allOf:
             - $ref: '#/components/schemas/Engine'
         runId:
-          description: Optional retry ID for State machine or Temporal. The Go loop ignores this field.
+          description: Optional retry ID for State machine or Temporal. The direct loop ignores this field.
           allOf:
             - $ref: '#/components/schemas/RunIdentifier'
     ChatReply:

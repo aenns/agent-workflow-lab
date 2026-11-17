@@ -62,10 +62,10 @@ wait_for() {
   return 1
 }
 
-for tool in docker go npm curl make; do
+for tool in docker go node npm curl make; do
   command -v "$tool" >/dev/null || { printf 'Install %s before starting the lab.\n' "$tool" >&2; exit 1; }
 done
-for port in 8080 5173; do
+for port in 8080 "${TS_API_PORT:-8081}" 5173; do
   if /usr/sbin/lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     printf 'Port %s is in use. Stop the existing server before using this shortcut.\n' "$port" >&2
     exit 1
@@ -83,7 +83,7 @@ if ! curl -fsS --max-time 2 "${ollama_url%/}/api/tags" >/dev/null; then
   wait_for Ollama 45 curl -fsS --max-time 2 "${ollama_url%/}/api/tags"
 fi
 
-if [[ ! -x node_modules/.bin/vite ]]; then
+if [[ ! -x node_modules/.bin/vite ]] || ! (cd apps/api-ts && node -e 'require.resolve("@temporalio/worker")') >/dev/null 2>&1; then
   make install
 fi
 check_stop
@@ -95,12 +95,17 @@ make dev-api &
 children+=("$!")
 make dev-worker &
 children+=("$!")
+make dev-api-ts &
+children+=("$!")
+make dev-worker-ts &
+children+=("$!")
 make dev-web &
 children+=("$!")
 
 web_url=http://127.0.0.1:5173
 wait_for 'the web app' 60 curl -fsS --max-time 2 "$web_url/"
-wait_for 'the API through the web app' 60 curl -fsS --max-time 2 "$web_url/api/health"
+wait_for 'the Go API through the web app' 60 curl -fsS --max-time 2 "$web_url/api/health"
+wait_for 'the TypeScript API through the web app' 60 curl -fsS --max-time 2 "$web_url/typescript/api/health"
 if ! /usr/bin/open -b com.google.Chrome "$web_url/"; then
   printf 'Could not open Chrome automatically. Open %s/ in Chrome.\n' "$web_url" >&2
 fi

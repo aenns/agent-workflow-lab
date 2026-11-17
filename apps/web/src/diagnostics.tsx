@@ -1,3 +1,4 @@
+import { apiPath, type Backend } from './backend';
 import { useEffect, useState } from 'react';
 import { parse } from 'yaml';
 import { correlatedFetch, correlationHeader, readBrowserLogs, type LogEntry } from './telemetry';
@@ -53,7 +54,7 @@ async function openAPI(response: Response): Promise<Operation[]> {
   });
 }
 
-function Endpoint({ operation }: { operation: Operation }) {
+function Endpoint({ backend, operation }: { backend: Backend; operation: Operation }) {
   const { path, method, summary, description, responses, requestBody } = operation;
   const example = requestBody?.content['application/json']?.example;
   const [body, setBody] = useState(() => example ? JSON.stringify(example, null, 2) : '{}');
@@ -78,7 +79,7 @@ function Endpoint({ operation }: { operation: Operation }) {
         if (field.name && pathValues[field.name]?.trim()) query.set(field.name, pathValues[field.name].trim());
       }
       const target = path.replace(/\{([^}]+)\}/g, (_, field: string) => encodeURIComponent(pathValues[field].trim()));
-      const response = await correlatedFetch(query.size ? `${target}?${query}` : target, {
+      const response = await correlatedFetch(apiPath(backend, query.size ? `${target}?${query}` : target), {
         method, body: payload, headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
       });
       const text = response.headers.get('Content-Type')?.includes('application/json')
@@ -126,23 +127,23 @@ function Endpoint({ operation }: { operation: Operation }) {
   );
 }
 
-export function APIReference() {
-  const { data, error, refresh } = useResource('/api/openapi.yaml', openAPI);
+export function APIReference({ backend }: { backend: Backend }) {
+  const { data, error, refresh } = useResource(apiPath(backend, '/api/openapi.yaml'), openAPI);
   return <section className="panel" aria-labelledby="api-title">
     <div className="panel-heading">
       <div><h2 id="api-title">API reference</h2><p>Browse the OpenAPI contract and send test requests.</p></div>
-      <a className="action" href="/api/openapi.yaml" target="_blank" rel="noreferrer">Open YAML ↗</a>
+      <a className="action" href={apiPath(backend, '/api/openapi.yaml')} target="_blank" rel="noreferrer">Open YAML ↗</a>
     </div>
     {error && <p className="panel-status error" role="alert">{error} <button onClick={refresh}>Retry</button></p>}
     {!data && !error && <p className="panel-status" role="status">Loading API contract…</p>}
-    {data?.map((operation) => <Endpoint key={operation.path + operation.method} operation={operation} />)}
+    {data?.map((operation) => <Endpoint key={operation.path + operation.method} backend={backend} operation={operation} />)}
   </section>;
 }
 
 const decodeTools = (response: Response): Promise<Tool[]> => response.json();
 
-export function MCPTools() {
-  const { data, error, refresh } = useResource('/api/tools', decodeTools);
+export function MCPTools({ backend }: { backend: Backend }) {
+  const { data, error, refresh } = useResource(apiPath(backend, '/api/tools'), decodeTools);
   return <section className="panel" aria-labelledby="tools-title">
     <div className="panel-heading">
       <div><h2 id="tools-title">MCP tools</h2><p>Discovered from the local inventory server over stdio.</p></div>
@@ -166,7 +167,7 @@ function localDateKey(timestamp: string) {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-export function Logs({ filter, setFilter }: { filter: string; setFilter: (value: string) => void }) {
+export function Logs({ backend, filter, setFilter }: { backend: Backend; filter: string; setFilter: (value: string) => void }) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [error, setError] = useState('');
   const [service, setService] = useState('');
@@ -182,7 +183,7 @@ export function Logs({ filter, setFilter }: { filter: string; setFilter: (value:
       let records: LogEntry[] = [];
       try {
         // The log viewer polls quietly so reading a log doesn't create logs.
-        const response = await fetch('/api/logs', { signal: controller.signal });
+        const response = await fetch(apiPath(backend, '/api/logs'), { signal: controller.signal });
         if (!response.ok) throw new Error('Server logs are unavailable.');
         records = await response.json();
         setError('');

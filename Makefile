@@ -10,11 +10,12 @@ dev-web:
 	npm run dev
 
 test:
-	go test ./...
+	go test ./apps/api/...
+	npm test --workspace apps/api-ts
 
 build:
 	npm run build
-	go build ./...
+	go build ./apps/api/...
 
 .PHONY: dev-db stop-db
 dev-db:
@@ -36,3 +37,10 @@ stop-temporal:
 .PHONY: generate-api
 generate-api:
 	go generate ./apps/api/internal/httpapi/contract
+
+.PHONY: dev-api-ts dev-worker-ts
+dev-api-ts:
+	npm run dev --workspace apps/api-ts
+
+dev-worker-ts:
+	npm run worker --workspace apps/api-ts

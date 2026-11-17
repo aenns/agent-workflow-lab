@@ -1,3 +1,4 @@
+import { apiPath, type Backend } from './backend';
 import { useEffect, useState } from 'react';
 import { TokenTrace, ToolTrace, type TokenUsage, type ToolEvent } from './traces';
 import { correlatedFetch } from './telemetry';
@@ -23,8 +24,13 @@ function readNotifications(): Set<string> {
   }
 }
 
-export function useJobs() {
-  const [jobs, setJobs] = useState<Job[]>([]);
+export function useJobs(backend: Backend) {
+  // Keep each backend's recent jobs separate while the selector changes.
+  const [feeds, setFeeds] = useState<Partial<Record<Backend, Job[]>>>({});
+  const jobs = feeds[backend] ?? [];
+  function setJobs(update: (previous: Job[]) => Job[]) {
+    setFeeds((current) => ({ ...current, [backend]: update(current[backend] ?? []) }));
+  }
   const [error, setError] = useState('');
   const [read, setRead] = useState(readNotifications);
   useEffect(() => {
@@ -32,8 +38,8 @@ export function useJobs() {
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
-        const response = await fetch('/api/jobs', { signal: controller.signal });
-        if (!response.ok) throw new Error('Temporal is unavailable. Run make dev-temporal and make dev-worker to use background jobs.');
+        const response = await fetch(apiPath(backend, '/api/jobs'), { signal: controller.signal });
+        if (!response.ok) throw new Error('Temporal is unavailable. Start the selected backend and its Temporal services to use background jobs.');
         const next = await response.json() as Job[];
         if (controller.signal.aborted) return;
         const visible = new Set(next.map((job) => job.id));
@@ -51,7 +57,7 @@ export function useJobs() {
     }
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, []);
+  }, [backend]);
 
   // Workflow history owns job status. Browser storage remembers which
   // finished jobs this browser has acknowledged.
@@ -78,8 +84,8 @@ const statusLabel: Record<Job['status'], string> = {
   failed: 'Failed',
 };
 
-export function Jobs({ jobs, unread, error, selectedId, onSelect, onLogs }: {
-  jobs: Job[]; unread: Job[]; error: string; selectedId: string;
+export function Jobs({ backend, jobs, unread, error, selectedId, onSelect, onLogs }: {
+  backend: Backend; jobs: Job[]; unread: Job[]; error: string; selectedId: string;
   onSelect: (job: Job) => void; onLogs: (id: string) => void;
 }) {
   const selected = jobs.find((job) => job.id === selectedId);
@@ -91,7 +97,7 @@ export function Jobs({ jobs, unread, error, selectedId, onSelect, onLogs }: {
     if (!selectedId || !status || status === 'running') return;
     const controller = new AbortController();
     setDetailError('');
-    void correlatedFetch(`/api/jobs/${encodeURIComponent(selectedId)}`, { signal: controller.signal })
+    void correlatedFetch(apiPath(backend, `/api/jobs/${encodeURIComponent(selectedId)}`), { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error('Could not load the job report.');
         const result = await response.json() as Job;

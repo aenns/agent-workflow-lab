@@ -57,7 +57,7 @@ summary { cursor: pointer; }
 .connection-dot { flex: 0 0 8px; height: 8px; margin: 5px 0 0 2px; border-radius: 50%; background: #e6b97c; }
 .connection-dot.online { background: #79dfb6; box-shadow: 0 0 10px #79dfb660; }
 main { width: 100%; max-width: 1230px; padding: clamp(20px, 4vw, 52px); margin: 0 auto; }
-.page-header { margin-bottom: 23px; }
+.page-header { margin-bottom: 23px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .panel, .chat { background: var(--surface); border: 1px solid var(--line); border-radius: 15px; overflow: hidden; box-shadow: 0 14px 36px #080d192e; }
 .toolbar, .panel-heading {
   display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;

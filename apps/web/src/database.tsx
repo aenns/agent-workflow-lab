@@ -1,3 +1,4 @@
+import { apiPath, type Backend } from './backend';
 import { useEffect, useState, type FormEvent } from 'react';
 import { correlatedFetch } from './telemetry';
 
@@ -10,7 +11,7 @@ async function readJSON<T>(response: Response): Promise<T> {
   return payload as T;
 }
 
-export function Database({ initialRunId }: { initialRunId: string }) {
+export function Database({ backend, initialRunId }: { backend: Backend; initialRunId: string }) {
   const [queries, setQueries] = useState<SavedQuery[]>();
   const [catalogError, setCatalogError] = useState('');
   const [revision, setRevision] = useState(0);
@@ -24,12 +25,12 @@ export function Database({ initialRunId }: { initialRunId: string }) {
   useEffect(() => {
     const controller = new AbortController();
     setCatalogError('');
-    void correlatedFetch('/api/database/queries', { signal: controller.signal })
+    void correlatedFetch(apiPath(backend, '/api/database/queries'), { signal: controller.signal })
       .then(readJSON<SavedQuery[]>)
       .then((items) => { if (!controller.signal.aborted) setQueries(items); })
       .catch((cause: Error) => { if (!controller.signal.aborted) setCatalogError(cause.message); });
     return () => controller.abort();
-  }, [revision]);
+  }, [backend, revision]);
 
   function select(id: string) {
     setSelected(id);
@@ -44,7 +45,7 @@ export function Database({ initialRunId }: { initialRunId: string }) {
     setResult(undefined);
     setError('');
     try {
-      const response = await correlatedFetch('/api/database/query', {
+      const response = await correlatedFetch(apiPath(backend, '/api/database/query'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ queryId: query.id, runId: query.requiresRunId ? runId.trim() : undefined }),
@@ -77,7 +78,7 @@ export function Database({ initialRunId }: { initialRunId: string }) {
       </form>
       {query && <>
         <p className="muted">{query.description}</p>
-        <details className="tool-trace"><summary>View SQL</summary><pre className="code-block">{query.sql}</pre></details>
+        {query.sql && <details className="tool-trace"><summary>View SQL</summary><pre className="code-block">{query.sql}</pre></details>}
       </>}
       {error && <p className="error" role="alert">{error}</p>}
       {result && <>

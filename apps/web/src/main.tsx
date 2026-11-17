@@ -1,3 +1,4 @@
+import { apiPath, backendLabels, type Backend } from './backend';
 import { Database } from './database';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -20,21 +21,21 @@ const views: { id: View; label: string; icon: string }[] = [
   { id: 'logs', label: 'Logs', icon: '≡' },
 ];
 type DurableEngine = Exclude<Engine, 'loop'>;
-const engineLabels: Record<Engine, string> = { loop: 'Go loop', 'state-machine': 'State machine', temporal: 'Temporal' };
+const engineLabels: Record<Engine, string> = { loop: 'Direct loop', 'state-machine': 'State machine', temporal: 'Temporal' };
 const stateLabels: Record<string, string> = {
   asking_model: 'Ask model',
   running_tools: 'Run tools',
   completed: 'Complete',
 };
 
-type Run = { engine: Engine; model?: string; correlationId: string; runId?: string; states?: string[]; tools?: ToolEvent[]; usage?: TokenUsage[] };
+type Run = { backend: Backend; engine: Engine; model?: string; correlationId: string; runId?: string; states?: string[]; tools?: ToolEvent[]; usage?: TokenUsage[] };
 
 type Message = { role: 'user' | 'assistant'; content: string };
 type Readiness = { ready: boolean; model?: string; detail: string };
 
 // Keep an unfinished durable request in this browser tab. Reusing the ID
 // also requires sending the same messages, so save them together.
-type SavedTurn = { runId: string; model?: string; engine: DurableEngine; messages: Message[] };
+type SavedTurn = { backend?: Backend; runId: string; model?: string; engine: DurableEngine; messages: Message[] };
 const savedTurnKey = 'workflow-lab:pending-state-machine';
 
 function readSavedTurn(): SavedTurn | null {
@@ -59,12 +60,14 @@ function App() {
   const [view, setView] = useState<View>('chat');
   const [databaseRunId, setDatabaseRunId] = useState('');
   const [logFilter, setLogFilter] = useState('');
-  const jobFeed = useJobs();
   const [selectedJob, setSelectedJob] = useState('');
   const [jobPending, setJobPending] = useState(false);
   const jobDraft = useRef<{ prompt: string; model: string; key: string }>(null);
-  const firstUnread = jobFeed.unread[0];
   const [savedTurn, setSavedTurn] = useState(readSavedTurn);
+  const [backend, setBackend] = useState<Backend>(() =>
+    savedTurn?.backend ?? (sessionStorage.getItem('workflow-lab:backend') === 'typescript' ? 'typescript' : 'go'));
+  const jobFeed = useJobs(backend);
+  const firstUnread = jobFeed.unread[0];
   // React rerenders when a state setter runs. These initializers restore
   // the draft once, when the component first mounts.
   const [messages, setMessages] = useState<Message[]>(() => savedTurn?.messages.slice(0, -1) ?? []);
@@ -73,7 +76,7 @@ function App() {
   const [catalog, setCatalog] = useState<{ defaultModel: string; models: string[] }>();
   const [modelError, setModelError] = useState('');
   const [openedLibrary, setOpenedLibrary] = useState(false);
-  // Keep run details separate so only conversation text goes back to Go.
+  // Keep run details separate so the selected backend receives only conversation text.
   const [runs, setRuns] = useState<Record<number, Run>>({});
   const [prompt, setPrompt] = useState(() => savedTurn?.messages.at(-1)?.content ?? '');
   const [pending, setPending] = useState(false);
@@ -83,12 +86,13 @@ function App() {
   const latest = useRef<HTMLDivElement>(null);
   const promptBytes = new TextEncoder().encode(prompt.trim()).length;
   const full = messages.length >= 42;
-  const canResume = !!savedTurn && savedTurn.engine === engine && (savedTurn.model ?? '') === model &&
+  // Saved run IDs belong to the backend and engine that created them.
+  const canResume = !!savedTurn && (savedTurn.backend ?? 'go') === backend && savedTurn.engine === engine && (savedTurn.model ?? '') === model &&
     savedTurn.messages.at(-1)?.content === prompt.trim();
 
   async function checkReadiness(signal?: AbortSignal) {
     try {
-      const response = await correlatedFetch('/api/ready', { signal });
+      const response = await correlatedFetch(apiPath(backend, '/api/ready'), { signal });
       const result = await response.json();
       const ready = response.ok && result.status === 'ready';
       setReadiness({
@@ -98,14 +102,14 @@ function App() {
       });
     } catch {
       if (!signal?.aborted) {
-        setReadiness({ ready: false, detail: 'Start the Go API and check again.' });
+        setReadiness({ ready: false, detail: `Start the ${backendLabels[backend]} API and check again.` });
       }
     }
   }
 
   async function loadModels(signal?: AbortSignal) {
     try {
-      const response = await correlatedFetch('/api/models', { signal });
+      const response = await correlatedFetch(apiPath(backend, '/api/models'), { signal });
       if (!response.ok) throw new Error('Could not load installed models.');
       const data = await response.json();
       if (!signal?.aborted) {
@@ -123,7 +127,7 @@ function App() {
     void checkReadiness(controller.signal);
     void loadModels(controller.signal);
     return () => controller.abort();
-  }, []);
+  }, [backend]);
 
   useEffect(() => {
     latest.current?.scrollIntoView({ block: 'nearest' });
@@ -142,25 +146,26 @@ function App() {
         ? (canResume ? savedTurn?.runId : crypto.randomUUID())
         : undefined;
       if (runId && engine !== 'loop') {
-        const active = { runId, engine, model, messages: conversation };
+        const active = { backend, runId, engine, model, messages: conversation };
         setSavedTurn(active);
         storeTurn(active);
       }
       // Durable retries reuse their run ID as the browser's correlation ID.
       const correlationId = runId ?? crypto.randomUUID();
-      const response = await correlatedFetch('/api/chat', {
+      const response = await correlatedFetch(apiPath(backend, '/api/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: conversation, engine, model: model || undefined, runId }),
-      }, correlationId, { engine });
+      }, correlationId, { engine, backend });
       const result = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(result?.error || 'Could not reach the Go API. Try again.');
+      if (!response.ok) throw new Error(result?.error || `Could not reach the ${backendLabels[backend]} API. Try again.`);
       if (result?.message?.role !== 'assistant' || typeof result.message.content !== 'string') {
         throw new Error('The API returned an invalid reply. Try again.');
       }
       setRuns((current) => ({
         ...current,
         [conversation.length]: {
+          backend,
           engine,
           model: result.model,
           correlationId: response.headers.get(correlationHeader) ?? correlationId,
@@ -200,10 +205,10 @@ function App() {
     setJobPending(true);
     setError('');
     try {
-      const response = await correlatedFetch('/api/jobs', {
+      const response = await correlatedFetch(apiPath(backend, '/api/jobs'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: text, key, model: model || undefined }),
-      }, `lab-job-${key}`);
+      }, `${backend === 'typescript' ? 'lab-ts-job' : 'lab-job'}-${key}`, { backend });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.id) throw new Error(result?.error || 'Could not start the background job.');
       const job = result as Job;
@@ -216,6 +221,17 @@ function App() {
     } finally {
       setJobPending(false);
     }
+  }
+
+  function selectBackend(next: Backend) {
+    setBackend(next);
+    sessionStorage.setItem('workflow-lab:backend', next);
+    setReadiness({ ready: false, detail: 'Checking connection…' });
+    setCatalog(undefined);
+    setModelError('');
+    setSelectedJob('');
+    setDatabaseRunId('');
+    setError('');
   }
 
   function changeView(next: View) {
@@ -268,23 +284,30 @@ function App() {
         </div>
       </aside>
       <main>
-        <header className="page-header"><h1>AI Agent &amp; MCP Workflow Lab</h1></header>
+        <header className="page-header">
+          <h1>AI Agent &amp; MCP Workflow Lab</h1>
+          <label>Backend{' '}
+            <select value={backend} disabled={pending || jobPending} onChange={(event) => selectBackend(event.target.value as Backend)}>
+              {Object.entries(backendLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+        </header>
         <div aria-live="polite">
           {firstUnread && <div className="job-notice">
             <span>{firstUnread.status === 'completed' ? 'Inventory audit complete' : 'Inventory audit failed'}{jobFeed.unread.length > 1 ? ` · ${jobFeed.unread.length} unread` : ''}</span>
             <button type="button" onClick={() => openJob(firstUnread)}>Open job</button>
           </div>}
         </div>
-        {view === 'jobs' && <Jobs jobs={jobFeed.jobs} unread={jobFeed.unread} error={jobFeed.error}
+        {view === 'jobs' && <Jobs key={backend} backend={backend} jobs={jobFeed.jobs} unread={jobFeed.unread} error={jobFeed.error}
           selectedId={selectedJob} onSelect={openJob} onLogs={openLogs} />}
         {openedLibrary && <div hidden={view !== 'models'}>
-          <ModelLibrary installed={catalog?.models ?? []} onInstalled={loadModels}
+          <ModelLibrary key={backend} backend={backend} installed={catalog?.models ?? []} onInstalled={loadModels}
             onUse={(tag, openChat = true) => { setModel(tag); if (openChat) setView('chat'); }} />
         </div>}
-        {view === 'api' && <APIReference />}
-        {view === 'tools' && <MCPTools />}
-        {view === 'database' && <Database initialRunId={databaseRunId} />}
-        {view === 'logs' && <Logs filter={logFilter} setFilter={setLogFilter} />}
+        {view === 'api' && <APIReference key={backend} backend={backend} />}
+        {view === 'tools' && <MCPTools key={backend} backend={backend} />}
+        {view === 'database' && <Database key={backend} backend={backend} initialRunId={databaseRunId} />}
+        {view === 'logs' && <Logs key={backend} backend={backend} filter={logFilter} setFilter={setLogFilter} />}
         {view === 'chat' && (
       <section className="chat" aria-label="Chat">
         <div className="toolbar">
@@ -301,7 +324,7 @@ function App() {
             <label htmlFor="engine">Engine</label>
             <select id="engine" value={engine} disabled={pending}
               onChange={(event) => setEngine(event.target.value as Engine)}>
-              <option value="loop">Go loop</option>
+              <option value="loop">{backendLabels[backend]} loop</option>
               <option value="state-machine">State machine</option>
               <option value="temporal">Temporal</option>
             </select>
@@ -313,11 +336,12 @@ function App() {
           {!messages.length && !pending && <div className="chat-empty">
             <div className="empty-mark" aria-hidden="true">◇</div>
             <h3>Start a conversation</h3>
-            <p>Ask about demo inventory or try a two-tool workflow.</p>
+            <p>Check stock and pickup hours for one or more demo items.</p>
             <div className="suggestions">
               {[
                 'How many LAMP-42 desk lamps are in stock?',
                 'Is LAMP-42 in stock, and when can I pick it up?',
+                'Check stock for LAMP-42 and MUG-17, then look up pickup hours for each warehouse. List stock and hours by item.',
               ].map((example) => <button type="button" key={example} onClick={() => {
                 setPrompt(example);
                 composer.current?.focus();
@@ -329,7 +353,7 @@ function App() {
             return (
               <article key={index} className={message.role}>
                 <strong>{message.role === 'user' ? 'You' : 'Assistant'}</strong>
-                {run && <span className="run-engine"> · {engineLabels[run.engine]}{run.model && ` · ${run.model}`}</span>}
+                {run && <span className="run-engine"> · {backendLabels[run.backend]} · {engineLabels[run.engine]}{run.model && ` · ${run.model}`}</span>}
                 <p>{message.content}</p>
                 {run && <div className="run-meta">
                   <span>Correlation ID <code>{run.correlationId}</code></span>
@@ -344,6 +368,7 @@ function App() {
                     {run.runId && <div className="run-meta">
                       <span>Run ID <code>{run.runId}</code></span>
                       <button className="text-button" type="button" onClick={() => {
+                        if (run.backend !== backend) selectBackend(run.backend);
                         setDatabaseRunId(run.runId ?? '');
                         setView('database');
                       }}>Inspect checkpoints ↗</button>

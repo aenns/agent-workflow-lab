@@ -1,3 +1,4 @@
+import { apiPath, type Backend } from './backend';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { correlatedFetch } from './telemetry';
 
@@ -9,8 +10,8 @@ async function readError(response: Response, fallback: string) {
   return new Error(body?.error || fallback);
 }
 
-async function download(tag: string, signal: AbortSignal, onProgress: (value: Progress) => void) {
-  const response = await correlatedFetch('/api/models/install', {
+async function download(backend: Backend, tag: string, signal: AbortSignal, onProgress: (value: Progress) => void) {
+  const response = await correlatedFetch(apiPath(backend, '/api/models/install'), {
     method: 'POST',
     body: JSON.stringify({ model: tag }),
     headers: { 'Content-Type': 'application/json' },
@@ -45,7 +46,8 @@ async function download(tag: string, signal: AbortSignal, onProgress: (value: Pr
   if (!succeeded) throw new Error('The download ended before Ollama confirmed success.');
 }
 
-export function ModelLibrary({ installed, onInstalled, onUse }: {
+export function ModelLibrary({ backend, installed, onInstalled, onUse }: {
+  backend: Backend;
   installed: string[];
   onInstalled: () => Promise<string[] | undefined>;
   onUse: (tag: string, openChat?: boolean) => void;
@@ -77,7 +79,7 @@ export function ModelLibrary({ installed, onInstalled, onUse }: {
     setSearchError('');
     setResults(undefined);
     try {
-      const response = await correlatedFetch(`/api/models/search?q=${encodeURIComponent(query.trim())}`, { signal: controller.signal });
+      const response = await correlatedFetch(apiPath(backend, `/api/models/search?q=${encodeURIComponent(query.trim())}`), { signal: controller.signal });
       if (!response.ok) throw await readError(response, 'Could not search the Ollama Library.');
       const models = await response.json() as LibraryModel[];
       if (!controller.signal.aborted) setResults(models);
@@ -98,7 +100,7 @@ export function ModelLibrary({ installed, onInstalled, onUse }: {
     setInstallError('');
     setNotice('');
     try {
-      await download(name, controller.signal, setProgress);
+      await download(backend, name, controller.signal, setProgress);
       const updated = await onInstalled();
       const normalized = name.includes(':') ? name : `${name}:latest`;
       const selectable = updated?.find((item) => item === normalized || item === name);

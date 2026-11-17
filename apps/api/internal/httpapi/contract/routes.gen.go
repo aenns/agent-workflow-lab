@@ -191,14 +191,14 @@ type ChatReplyStates string
 
 // ChatRequest defines model for ChatRequest.
 type ChatRequest struct {
-	// Engine Omit this field to use the Go loop.
+	// Engine Omit this field to use the direct loop.
 	Engine   *Engine   `json:"engine,omitempty"`
 	Messages []Message `json:"messages"`
 
 	// Model Ollama model tag. Requests use the configured default when omitted.
 	Model *string `json:"model,omitempty"`
 
-	// RunId Optional retry ID for State machine or Temporal. The Go loop ignores this field.
+	// RunId Optional retry ID for State machine or Temporal. The direct loop ignores this field.
 	RunId *RunIdentifier `json:"runId,omitempty"`
 }
 
