@@ -122,6 +122,8 @@ article p { margin-top: 4px; white-space: pre-wrap; }
 .log-entry { border-bottom: 1px solid #28354a; padding: 5px 0; }
 .log-entry summary { list-style: none; display: grid; grid-template-columns: 90px 48px 112px minmax(0, 1fr); align-items: center; gap: 8px; padding: 5px; font-size: .79rem; }
 .log-entry time, .log-service { color: var(--muted); }
+.log-timestamp { display: grid; font-variant-numeric: tabular-nums; }
+.log-timestamp span + span { font-size: .73rem; }
 .log-level { color: #a4ddff; background: #233e57; }
 .log-level.warn { color: #f8d49a; background: #49361a; }
 .log-level.error { color: #ffbdba; background: #4e2b38; }
@@ -167,3 +169,24 @@ article p { margin-top: 4px; white-space: pre-wrap; }
 .job-report { display: grid; gap: 8px; border-top: 1px solid var(--line); padding: 16px 20px; }
 .report-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 520px) { .job-row { flex-direction: column; align-items: flex-start; } }
+
+.log-model { color: var(--accent); }
+
+.model-form { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; padding: 14px 20px; }
+.model-form label { display: grid; flex: 1 1 230px; gap: 5px; color: var(--muted); font-size: .84rem; }
+.model-list { list-style: none; margin: 0; padding: 0 20px 12px; }
+.model-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.model-install, .model-progress { border-top: 1px solid var(--line); }
+.model-progress { padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.model-progress progress { width: min(50vw, 250px); accent-color: var(--accent); }
+
+.database-content { display: grid; gap: 12px; padding: 18px 20px 22px; }
+.database-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.database-controls label { display: grid; gap: 4px; color: var(--muted); font-size: .84rem; }
+.database-controls label:nth-child(2) { flex: 1 1 210px; }
+.database-table { max-width: 100%; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.database-table table { border-collapse: collapse; width: 100%; font-size: .83rem; }
+.database-table th, .database-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+.database-table th { background: var(--raised); white-space: nowrap; }
+.database-table td { max-width: 360px; overflow-wrap: anywhere; vertical-align: top; }
+.database-table .code-block { min-width: min(300px, 65vw); }

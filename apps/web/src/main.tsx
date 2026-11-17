@@ -1,5 +1,7 @@
+import { Database } from './database';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ModelLibrary } from './model-library';
 import { Jobs, useJobs, type Job } from './jobs';
 import { TokenTrace, ToolTrace, type TokenUsage, type ToolEvent } from './traces';
 import { APIReference, Logs, MCPTools } from './diagnostics';
@@ -7,12 +9,14 @@ import { correlatedFetch, correlationHeader } from './telemetry';
 import './style.css';
 
 type Engine = 'loop' | 'state-machine' | 'temporal';
-type View = 'chat' | 'api' | 'tools' | 'logs' | 'jobs';
+type View = 'chat' | 'api' | 'tools' | 'logs' | 'jobs' | 'models' | 'database';
 const views: { id: View; label: string; icon: string }[] = [
   { id: 'chat', label: 'Chat', icon: '◫' },
   { id: 'jobs', label: 'Jobs', icon: '◷' },
+  { id: 'models', label: 'Models', icon: '◆' },
   { id: 'api', label: 'API reference', icon: '{}' },
   { id: 'tools', label: 'MCP tools', icon: '◇' },
+  { id: 'database', label: 'Database', icon: '▤' },
   { id: 'logs', label: 'Logs', icon: '≡' },
 ];
 type DurableEngine = Exclude<Engine, 'loop'>;
@@ -23,14 +27,14 @@ const stateLabels: Record<string, string> = {
   completed: 'Complete',
 };
 
-type Run = { engine: Engine; correlationId: string; runId?: string; states?: string[]; tools?: ToolEvent[]; usage?: TokenUsage[] };
+type Run = { engine: Engine; model?: string; correlationId: string; runId?: string; states?: string[]; tools?: ToolEvent[]; usage?: TokenUsage[] };
 
 type Message = { role: 'user' | 'assistant'; content: string };
 type Readiness = { ready: boolean; model?: string; detail: string };
 
 // Keep an unfinished durable request in this browser tab. Reusing the ID
 // also requires sending the same messages, so save them together.
-type SavedTurn = { runId: string; engine: DurableEngine; messages: Message[] };
+type SavedTurn = { runId: string; model?: string; engine: DurableEngine; messages: Message[] };
 const savedTurnKey = 'workflow-lab:pending-state-machine';
 
 function readSavedTurn(): SavedTurn | null {
@@ -53,17 +57,22 @@ function storeTurn(turn: SavedTurn | null) {
 
 function App() {
   const [view, setView] = useState<View>('chat');
+  const [databaseRunId, setDatabaseRunId] = useState('');
   const [logFilter, setLogFilter] = useState('');
   const jobFeed = useJobs();
   const [selectedJob, setSelectedJob] = useState('');
   const [jobPending, setJobPending] = useState(false);
-  const jobDraft = useRef<{ prompt: string; key: string }>(null);
+  const jobDraft = useRef<{ prompt: string; model: string; key: string }>(null);
   const firstUnread = jobFeed.unread[0];
   const [savedTurn, setSavedTurn] = useState(readSavedTurn);
   // React rerenders when a state setter runs. These initializers restore
   // the draft once, when the component first mounts.
   const [messages, setMessages] = useState<Message[]>(() => savedTurn?.messages.slice(0, -1) ?? []);
   const [engine, setEngine] = useState<Engine>(() => savedTurn?.engine ?? 'loop');
+  const [model, setModel] = useState(() => savedTurn?.model ?? '');
+  const [catalog, setCatalog] = useState<{ defaultModel: string; models: string[] }>();
+  const [modelError, setModelError] = useState('');
+  const [openedLibrary, setOpenedLibrary] = useState(false);
   // Keep run details separate so only conversation text goes back to Go.
   const [runs, setRuns] = useState<Record<number, Run>>({});
   const [prompt, setPrompt] = useState(() => savedTurn?.messages.at(-1)?.content ?? '');
@@ -74,7 +83,7 @@ function App() {
   const latest = useRef<HTMLDivElement>(null);
   const promptBytes = new TextEncoder().encode(prompt.trim()).length;
   const full = messages.length >= 42;
-  const canResume = !!savedTurn && savedTurn.engine === engine &&
+  const canResume = !!savedTurn && savedTurn.engine === engine && (savedTurn.model ?? '') === model &&
     savedTurn.messages.at(-1)?.content === prompt.trim();
 
   async function checkReadiness(signal?: AbortSignal) {
@@ -94,9 +103,25 @@ function App() {
     }
   }
 
+  async function loadModels(signal?: AbortSignal) {
+    try {
+      const response = await correlatedFetch('/api/models', { signal });
+      if (!response.ok) throw new Error('Could not load installed models.');
+      const data = await response.json();
+      if (!signal?.aborted) {
+        setCatalog(data);
+        setModelError('');
+        return data.models as string[];
+      }
+    } catch {
+      if (!signal?.aborted) setModelError('Could not load installed models.');
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     void checkReadiness(controller.signal);
+    void loadModels(controller.signal);
     return () => controller.abort();
   }, []);
 
@@ -117,7 +142,7 @@ function App() {
         ? (canResume ? savedTurn?.runId : crypto.randomUUID())
         : undefined;
       if (runId && engine !== 'loop') {
-        const active = { runId, engine, messages: conversation };
+        const active = { runId, engine, model, messages: conversation };
         setSavedTurn(active);
         storeTurn(active);
       }
@@ -126,7 +151,7 @@ function App() {
       const response = await correlatedFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: conversation, engine, runId }),
+        body: JSON.stringify({ messages: conversation, engine, model: model || undefined, runId }),
       }, correlationId, { engine });
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(result?.error || 'Could not reach the Go API. Try again.');
@@ -137,6 +162,7 @@ function App() {
         ...current,
         [conversation.length]: {
           engine,
+          model: result.model,
           correlationId: response.headers.get(correlationHeader) ?? correlationId,
           runId: result.runId,
           states: result.states,
@@ -167,14 +193,16 @@ function App() {
     const text = prompt.trim();
     if (pending || jobPending || !promptBytes || promptBytes > 8000) return;
     // Reuse the key when retrying a failed submission with the same prompt.
-    if (jobDraft.current?.prompt !== text) jobDraft.current = { prompt: text, key: crypto.randomUUID() };
+    if (jobDraft.current?.prompt !== text || jobDraft.current.model !== model) {
+      jobDraft.current = { prompt: text, model, key: crypto.randomUUID() };
+    }
     const { key } = jobDraft.current;
     setJobPending(true);
     setError('');
     try {
       const response = await correlatedFetch('/api/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text, key }),
+        body: JSON.stringify({ prompt: text, key, model: model || undefined }),
       }, `lab-job-${key}`);
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.id) throw new Error(result?.error || 'Could not start the background job.');
@@ -188,6 +216,14 @@ function App() {
     } finally {
       setJobPending(false);
     }
+  }
+
+  function changeView(next: View) {
+    if (next === 'models') {
+      setOpenedLibrary(true);
+      void loadModels();
+    }
+    setView(next);
   }
 
   function openLogs(id: string) {
@@ -215,7 +251,7 @@ function App() {
         <nav aria-label="Workspace">
           {views.map((item) => (
             <button type="button" key={item.id} aria-current={view === item.id ? 'page' : undefined}
-              onClick={() => setView(item.id)}>
+              onClick={() => changeView(item.id)}>
               <span className="nav-icon" aria-hidden="true">{item.icon}</span>{item.label}
               {item.id === 'jobs' && !!jobFeed.unread.length && <span className="job-count" aria-label={`${jobFeed.unread.length} unread job notifications`}>{jobFeed.unread.length}</span>}
             </button>
@@ -241,14 +277,27 @@ function App() {
         </div>
         {view === 'jobs' && <Jobs jobs={jobFeed.jobs} unread={jobFeed.unread} error={jobFeed.error}
           selectedId={selectedJob} onSelect={openJob} onLogs={openLogs} />}
+        {openedLibrary && <div hidden={view !== 'models'}>
+          <ModelLibrary installed={catalog?.models ?? []} onInstalled={loadModels}
+            onUse={(tag, openChat = true) => { setModel(tag); if (openChat) setView('chat'); }} />
+        </div>}
         {view === 'api' && <APIReference />}
         {view === 'tools' && <MCPTools />}
+        {view === 'database' && <Database initialRunId={databaseRunId} />}
         {view === 'logs' && <Logs filter={logFilter} setFilter={setLogFilter} />}
         {view === 'chat' && (
       <section className="chat" aria-label="Chat">
         <div className="toolbar">
           <h2>Local chat</h2>
           <div className="chat-controls">
+            <label htmlFor="model">Model</label>
+            <select id="model" value={model} disabled={pending || jobPending}
+              onChange={(event) => setModel(event.target.value)}>
+              <option value="">{catalog?.defaultModel ? `Default (${catalog.defaultModel})` : 'Configured default'}</option>
+              {model && !catalog?.models.includes(model) && <option value={model}>{model}</option>}
+              {catalog?.models.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+            </select>
+            <button type="button" onClick={() => changeView('models')}>Add models</button>
             <label htmlFor="engine">Engine</label>
             <select id="engine" value={engine} disabled={pending}
               onChange={(event) => setEngine(event.target.value as Engine)}>
@@ -259,6 +308,7 @@ function App() {
             <button type="button" onClick={reset} disabled={pending || jobPending}>New chat</button>
           </div>
         </div>
+        {modelError && <p className="panel-status error" role="status">{modelError}</p>}
         <div className="transcript" role="log" aria-label="Conversation">
           {!messages.length && !pending && <div className="chat-empty">
             <div className="empty-mark" aria-hidden="true">◇</div>
@@ -279,7 +329,7 @@ function App() {
             return (
               <article key={index} className={message.role}>
                 <strong>{message.role === 'user' ? 'You' : 'Assistant'}</strong>
-                {run && <span className="run-engine"> · {engineLabels[run.engine]}</span>}
+                {run && <span className="run-engine"> · {engineLabels[run.engine]}{run.model && ` · ${run.model}`}</span>}
                 <p>{message.content}</p>
                 {run && <div className="run-meta">
                   <span>Correlation ID <code>{run.correlationId}</code></span>
@@ -291,7 +341,13 @@ function App() {
                 {!!run?.states?.length && (
                   <details className="tool-trace">
                     <summary>State transitions</summary>
-                    {run.runId && <p>Run ID <code>{run.runId}</code></p>}
+                    {run.runId && <div className="run-meta">
+                      <span>Run ID <code>{run.runId}</code></span>
+                      <button className="text-button" type="button" onClick={() => {
+                        setDatabaseRunId(run.runId ?? '');
+                        setView('database');
+                      }}>Inspect checkpoints ↗</button>
+                    </div>}
                     <ol>{run.states.map((state, step) => <li key={step}>{stateLabels[state] ?? state}</li>)}</ol>
                   </details>
                 )}

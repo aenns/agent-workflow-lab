@@ -163,6 +163,141 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/models:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: getModels
+      summary: List installed Ollama models available for selection
+      responses:
+        '200':
+          description: Configured default and selectable model tags
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelCatalog'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+  /api/models/search:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: searchModels
+      summary: Search the public Ollama Library
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 80
+      responses:
+        '200':
+          description: Matching library tags and links
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LibraryModel'
+        '400':
+          $ref: '#/components/responses/JobError'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+  /api/models/install:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    post:
+      operationId: installModel
+      summary: Download a library model into local Ollama
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InstallModelRequest'
+            example:
+              model: qwen3.5:9b
+      responses:
+        '200':
+          description: Stream of JSON progress objects, one per line. The final object has status success or an error field.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/JobError'
+        '409':
+          $ref: '#/components/responses/JobError'
+        '415':
+          $ref: '#/components/responses/JobError'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
+  /api/database/queries:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    get:
+      operationId: listDatabaseQueries
+      summary: List saved PostgreSQL queries
+      responses:
+        '200':
+          description: Read-only checkpoint queries and their SQL
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SavedQuery'
+  /api/database/query:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    post:
+      operationId: runDatabaseQuery
+      summary: Execute a saved query against PostgreSQL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatabaseQueryRequest'
+            example:
+              queryId: recent-runs
+      responses:
+        '200':
+          description: Query columns and rows in display order
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatabaseQueryResult'
+        '400':
+          $ref: '#/components/responses/JobError'
+        '409':
+          description: Checkpoint storage has not been initialized
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/DiagnosticsUnavailable'
   /api/tools:
     parameters:
       - $ref: '#/components/parameters/CorrelationID'
@@ -287,7 +422,7 @@ paths:
 components:
   responses:
     JobError:
-      description: Invalid request, missing job, or job ID conflict
+      description: Invalid request or related resource error
       headers:
         X-Correlation-ID:
           $ref: '#/components/headers/CorrelationID'
@@ -378,6 +513,9 @@ components:
       type: object
       required: [messages]
       properties:
+        model:
+          type: string
+          description: Ollama model tag. Requests use the configured default when omitted.
         messages:
           type: array
           minItems: 1
@@ -397,6 +535,9 @@ components:
       type: object
       required: [engine, message]
       properties:
+        model:
+          type: string
+          description: Ollama model tag. Requests use the configured default when omitted.
         usage:
           type: array
           description: Ollama token counts for each completed model call, in order. A count can be absent when the model server does not report it.
@@ -495,6 +636,9 @@ components:
       type: object
       required: [prompt]
       properties:
+        model:
+          type: string
+          description: Ollama model tag. Requests use the configured default when omitted.
         prompt:
           type: string
           minLength: 1
@@ -505,6 +649,9 @@ components:
       type: object
       required: [id, prompt, status, startedAt]
       properties:
+        model:
+          type: string
+          description: Ollama model tag. Requests use the configured default when omitted.
         id:
           type: string
         prompt:
@@ -523,3 +670,67 @@ components:
           type: string
         report:
           $ref: '#/components/schemas/ChatReply'
+    ModelCatalog:
+      type: object
+      required: [defaultModel, models]
+      properties:
+        defaultModel:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+    LibraryModel:
+      type: object
+      required: [tag, url]
+      properties:
+        tag:
+          type: string
+        url:
+          type: string
+    InstallModelRequest:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+          description: Local Ollama Library model name with an optional tag.
+    SavedQuery:
+      type: object
+      required: [id, title, description, sql, requiresRunId]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        sql:
+          type: string
+        requiresRunId:
+          type: boolean
+    DatabaseQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [queryId]
+      properties:
+        queryId:
+          type: string
+        runId:
+          $ref: '#/components/schemas/RunIdentifier'
+    DatabaseQueryResult:
+      type: object
+      required: [columns, rows]
+      properties:
+        columns:
+          type: array
+          items:
+            type: string
+        rows:
+          x-go-type: "[][]any"
+          type: array
+          items:
+            type: array
+            items:
+              type: [object, array, string, number, boolean, 'null']
+              x-go-type: 'interface{}'

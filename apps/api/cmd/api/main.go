@@ -126,14 +126,14 @@ func run(ctx context.Context, logs lablogs.Store, isWorker bool) error {
 		<-ctx.Done()
 		return nil
 	}
-	service.Temporal = &agent.TemporalEngine{Client: tc, Timeout: cfg.Timeout}
+	service.Temporal = &agent.TemporalEngine{Client: tc, Timeout: cfg.Timeout, DefaultModel: cfg.Model}
 	return runAPI(ctx, cfg, service, logs)
 }
 
 func runAPI(ctx context.Context, cfg config.Config, service agent.Agent, logs lablogs.Store) error {
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.Handler(service, cfg.Model, cfg.Timeout, httpapi.Diagnostics{ListTools: service.ListTools, RecentLogs: logs.Recent, Jobs: service.Temporal}),
+		Handler:           httpapi.Handler(service, cfg.Model, cfg.Timeout, httpapi.Diagnostics{InspectDatabase: (&checkpoint.Postgres{URL: cfg.DatabaseURL}).Inspect, ListTools: service.ListTools, ListModels: service.Model.ListModels, SearchLibrary: ollama.SearchLibrary, PullModel: service.Model.Pull, RecentLogs: logs.Recent, Jobs: service.Temporal}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      cfg.Timeout + 15*time.Second,

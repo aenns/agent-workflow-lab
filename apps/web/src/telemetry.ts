@@ -8,6 +8,7 @@ export type LogEntry = {
   msg: string;
   service?: string;
   component?: string;
+  model?: string;
   level?: string;
   correlation_id?: string;
 };

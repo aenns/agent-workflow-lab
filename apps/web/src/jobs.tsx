@@ -5,6 +5,7 @@ import { correlatedFetch } from './telemetry';
 export type Job = {
   id: string;
   prompt: string;
+  model?: string;
   status: 'running' | 'completed' | 'failed';
   startedAt: string;
   finishedAt?: string;
@@ -117,7 +118,7 @@ export function Jobs({ jobs, unread, error, selectedId, onSelect, onLogs }: {
     </div>}
     {selected && <div className="job-report">
       <h3>Job report</h3>
-      <p className="muted">{statusLabel[selected.status]} · <code>{selected.id}</code></p>
+      <p className="muted">{statusLabel[selected.status]}{selected.model && ` · ${selected.model}`} · <code>{selected.id}</code></p>
       <div className="run-meta">
         {selected.correlationId && <button type="button" onClick={() => onLogs(selected.correlationId!)}>View logs ↗</button>}
         <a href="http://127.0.0.1:8233/namespaces/default/workflows" target="_blank" rel="noreferrer">Temporal history ↗</a>

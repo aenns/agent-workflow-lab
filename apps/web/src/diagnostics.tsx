@@ -9,6 +9,7 @@ type Operation = {
   summary: string;
   description?: string;
   responses: Record<string, { description?: string }>;
+  parameters?: { name?: string; in?: string; required?: boolean }[];
   requestBody?: { content: { 'application/json'?: { example?: unknown } } };
 };
 
@@ -47,7 +48,7 @@ async function openAPI(response: Response): Promise<Operation[]> {
       .filter(([method]) => methods.has(method))
       .map(([method, operation]) => ({ ...operation, path, method: method.toUpperCase() })),
   ).sort((a, b) => {
-    const order = ['/api/chat', '/api/health', '/api/ready', '/api/tools', '/api/jobs', '/api/jobs/{jobId}', '/api/logs', '/api/openapi.yaml'];
+    const order = ['/api/chat', '/api/health', '/api/ready', '/api/models', '/api/models/search', '/api/models/install', '/api/tools', '/api/database/queries', '/api/database/query', '/api/jobs', '/api/jobs/{jobId}', '/api/logs', '/api/openapi.yaml'];
     return order.indexOf(a.path) - order.indexOf(b.path);
   });
 }
@@ -62,15 +63,22 @@ function Endpoint({ operation }: { operation: Operation }) {
   const hasBody = !!requestBody;
   const pathFields = [...path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
   const [pathValues, setPathValues] = useState<Record<string, string>>({});
-  const canSend = pathFields.every((field) => pathValues[field]?.trim());
+  const queryFields = (operation.parameters ?? []).filter((field) => field.in === 'query' && field.name);
+  const allFields = [...pathFields, ...queryFields.map((field) => field.name!)];
+  const canSend = [...pathFields, ...queryFields.filter((field) => field.required).map((field) => field.name!)]
+    .every((field) => pathValues[field]?.trim());
   async function tryRequest() {
     setError('');
     setResult(undefined);
     setPending(true);
     try {
       const payload = hasBody ? JSON.stringify(JSON.parse(body)) : undefined;
-      const url = path.replace(/\{([^}]+)\}/g, (_, field: string) => encodeURIComponent(pathValues[field].trim()));
-      const response = await correlatedFetch(url, {
+      const query = new URLSearchParams();
+      for (const field of queryFields) {
+        if (field.name && pathValues[field.name]?.trim()) query.set(field.name, pathValues[field.name].trim());
+      }
+      const target = path.replace(/\{([^}]+)\}/g, (_, field: string) => encodeURIComponent(pathValues[field].trim()));
+      const response = await correlatedFetch(query.size ? `${target}?${query}` : target, {
         method, body: payload, headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
       });
       const text = response.headers.get('Content-Type')?.includes('application/json')
@@ -93,7 +101,7 @@ function Endpoint({ operation }: { operation: Operation }) {
             <li key={code}><code>{code}</code> {response.description ?? 'See OpenAPI schema'}</li>
           ))}
         </ul>
-        {pathFields.map((field) => <label className="editor" key={field}>
+        {allFields.map((field) => <label className="editor" key={field}>
           {field}<input value={pathValues[field] ?? ''} onChange={(event) => {
             const value = event.target.value;
             setPathValues((current) => ({ ...current, [field]: value }));
@@ -151,11 +159,19 @@ export function MCPTools() {
   </section>;
 }
 
+function localDateKey(timestamp: string) {
+  const date = new Date(timestamp);
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
 export function Logs({ filter, setFilter }: { filter: string; setFilter: (value: string) => void }) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [error, setError] = useState('');
   const [service, setService] = useState('');
   const [level, setLevel] = useState('');
+  const [date, setDate] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [live, setLive] = useState(true);
 
@@ -187,6 +203,7 @@ export function Logs({ filter, setFilter }: { filter: string; setFilter: (value:
   const matches = logs.filter((entry) =>
     (!service || entry.service === service) &&
     (!level || entry.level === level) &&
+    (!date || localDateKey(entry.time) === date) &&
     (!query || entry.correlation_id?.toLowerCase().includes(query)),
   );
   return <section className="panel logs-panel" aria-labelledby="logs-title">
@@ -199,6 +216,7 @@ export function Logs({ filter, setFilter }: { filter: string; setFilter: (value:
     </div>
     <div className="filters">
       <label>Correlation ID<input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Paste an ID" /></label>
+      <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
       <label>Service<select value={service} onChange={(event) => setService(event.target.value)}>
         <option value="">All services</option>
         {services.map((name) => <option key={name}>{name}</option>)}
@@ -208,16 +226,20 @@ export function Logs({ filter, setFilter }: { filter: string; setFilter: (value:
         {['debug', 'info', 'warn', 'error'].map((name) => <option key={name}>{name}</option>)}
       </select></label>
       {filter && <button onClick={() => setFilter('')}>Clear ID</button>}
+      {date && <button onClick={() => setDate('')}>Clear date</button>}
     </div>
     {error && <p role="alert" className="panel-status error">{error}</p>}
     <div className="log-scroll">
       {matches.length === 0 && <p className="panel-status">No log entries match these filters.</p>}
       {matches.map((entry, index) => <details className="log-entry" key={`${entry.time}-${entry.service}-${entry.msg}-${index}`}>
         <summary>
-          <time dateTime={entry.time}>{new Date(entry.time).toLocaleTimeString()}</time>
+          <time className="log-timestamp" dateTime={entry.time}>
+            <span>{localDateKey(entry.time)}</span>
+            <span>{new Date(entry.time).toLocaleTimeString()}</span>
+          </time>
           <span className={`log-level ${entry.level ?? ''}`}>{entry.level ?? 'log'}</span>
           <span className="log-service">{entry.service ?? 'app'}</span>
-          <code>{entry.msg}</code>
+          <code>{entry.msg}{entry.model && <span className="log-model"> · {entry.model}</span>}</code>
         </summary>
         <pre className="code-block">{JSON.stringify(entry, null, 2)}</pre>
       </details>)}

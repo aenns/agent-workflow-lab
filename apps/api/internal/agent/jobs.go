@@ -25,6 +25,7 @@ type Job struct {
 	ID            string
 	CorrelationID string
 	Prompt        string
+	Model         string
 	Status        string
 	StartedAt     time.Time
 	FinishedAt    *time.Time
@@ -33,13 +34,16 @@ type Job struct {
 
 // StartJob waits for Temporal to accept the workflow, then returns without
 // waiting for any model or MCP activity to run.
-func (e TemporalEngine) StartJob(ctx context.Context, key, prompt string) (Job, error) {
+func (e TemporalEngine) StartJob(ctx context.Context, key, prompt, model string) (Job, error) {
 	id := JobPrefix + key
-	_, err := e.start(ctx, id, auditWorkflow, []chat.Message{{Role: "user", Content: prompt}}, prompt)
+	_, err := e.start(ctx, id, auditWorkflow, []chat.Message{{Role: "user", Content: prompt}}, prompt, model)
 	if err != nil {
 		return Job{}, err
 	}
-	return Job{ID: id, Prompt: prompt, Status: "running", StartedAt: time.Now(), CorrelationID: telemetry.Correlation(ctx)}, nil
+	if model == "" {
+		model = e.DefaultModel
+	}
+	return Job{ID: id, Prompt: prompt, Model: model, Status: "running", StartedAt: time.Now(), CorrelationID: telemetry.Correlation(ctx)}, nil
 }
 
 func (e TemporalEngine) ListJobs(ctx context.Context) ([]Job, error) {
@@ -100,6 +104,9 @@ func jobSummary(info *workflowpb.WorkflowExecutionInfo) Job {
 	if info.GetCloseTime() != nil {
 		finished := info.GetCloseTime().AsTime()
 		job.FinishedAt = &finished
+	}
+	if payload := info.GetMemo().GetFields()["model"]; payload != nil {
+		_ = converter.GetDefaultDataConverter().FromPayload(payload, &job.Model)
 	}
 	if payload := info.GetMemo().GetFields()["prompt"]; payload != nil {
 		_ = converter.GetDefaultDataConverter().FromPayload(payload, &job.Prompt)

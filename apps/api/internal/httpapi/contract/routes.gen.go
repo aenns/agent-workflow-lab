@@ -7,6 +7,7 @@ package contract
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -169,6 +170,9 @@ type ChatReply struct {
 	Engine  Engine           `json:"engine"`
 	Message AssistantMessage `json:"message"`
 
+	// Model Ollama model tag. Requests use the configured default when omitted.
+	Model *string `json:"model,omitempty"`
+
 	// RunId State-machine run ID or Temporal workflow ID (prefixed with lab-chat-).
 	RunId *string `json:"runId,omitempty"`
 
@@ -191,8 +195,23 @@ type ChatRequest struct {
 	Engine   *Engine   `json:"engine,omitempty"`
 	Messages []Message `json:"messages"`
 
+	// Model Ollama model tag. Requests use the configured default when omitted.
+	Model *string `json:"model,omitempty"`
+
 	// RunId Optional retry ID for State machine or Temporal. The Go loop ignores this field.
 	RunId *RunIdentifier `json:"runId,omitempty"`
+}
+
+// DatabaseQueryRequest defines model for DatabaseQueryRequest.
+type DatabaseQueryRequest struct {
+	QueryId string         `json:"queryId"`
+	RunId   *RunIdentifier `json:"runId,omitempty"`
+}
+
+// DatabaseQueryResult defines model for DatabaseQueryResult.
+type DatabaseQueryResult struct {
+	Columns []string `json:"columns"`
+	Rows    [][]any  `json:"rows"`
 }
 
 // Engine defines model for Engine.
@@ -211,14 +230,23 @@ type Health struct {
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// InstallModelRequest defines model for InstallModelRequest.
+type InstallModelRequest struct {
+	// Model Local Ollama Library model name with an optional tag.
+	Model string `json:"model"`
+}
+
 // Job defines model for Job.
 type Job struct {
 	CorrelationId *string    `json:"correlationId,omitempty"`
 	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
 	Id            string     `json:"id"`
-	Prompt        string     `json:"prompt"`
-	Report        *ChatReply `json:"report,omitempty"`
-	StartedAt     time.Time  `json:"startedAt"`
+
+	// Model Ollama model tag. Requests use the configured default when omitted.
+	Model     *string    `json:"model,omitempty"`
+	Prompt    string     `json:"prompt"`
+	Report    *ChatReply `json:"report,omitempty"`
+	StartedAt time.Time  `json:"startedAt"`
 
 	// Status Running includes jobs waiting for a worker.
 	Status JobStatus `json:"status"`
@@ -231,8 +259,17 @@ type JobStatus string
 type JobRequest struct {
 	Key *RunIdentifier `json:"key,omitempty"`
 
+	// Model Ollama model tag. Requests use the configured default when omitted.
+	Model *string `json:"model,omitempty"`
+
 	// Prompt Standalone inventory question. Maximum 8,000 UTF-8 bytes.
 	Prompt string `json:"prompt"`
+}
+
+// LibraryModel defines model for LibraryModel.
+type LibraryModel struct {
+	Tag string `json:"tag"`
+	Url string `json:"url"`
 }
 
 // LogEntry defines model for LogEntry.
@@ -263,6 +300,12 @@ type Message struct {
 // MessageRole defines model for Message.Role.
 type MessageRole string
 
+// ModelCatalog defines model for ModelCatalog.
+type ModelCatalog struct {
+	DefaultModel string   `json:"defaultModel"`
+	Models       []string `json:"models"`
+}
+
 // Readiness defines model for Readiness.
 type Readiness struct {
 	Model  string          `json:"model"`
@@ -274,6 +317,15 @@ type ReadinessStatus string
 
 // RunIdentifier defines model for RunIdentifier.
 type RunIdentifier = string
+
+// SavedQuery defines model for SavedQuery.
+type SavedQuery struct {
+	Description   string `json:"description"`
+	Id            string `json:"id"`
+	RequiresRunId bool   `json:"requiresRunId"`
+	Sql           string `json:"sql"`
+	Title         string `json:"title"`
+}
 
 // TokenUsage defines model for TokenUsage.
 type TokenUsage struct {
@@ -319,6 +371,18 @@ type PostChatParams struct {
 	XCorrelationID *CorrelationID `json:"X-Correlation-ID,omitempty"`
 }
 
+// ListDatabaseQueriesParams defines parameters for ListDatabaseQueries.
+type ListDatabaseQueriesParams struct {
+	// XCorrelationID Optional request ID. The API generates one when the supplied value is missing or invalid.
+	XCorrelationID *CorrelationID `json:"X-Correlation-ID,omitempty"`
+}
+
+// RunDatabaseQueryParams defines parameters for RunDatabaseQuery.
+type RunDatabaseQueryParams struct {
+	// XCorrelationID Optional request ID. The API generates one when the supplied value is missing or invalid.
+	XCorrelationID *CorrelationID `json:"X-Correlation-ID,omitempty"`
+}
+
 // GetHealthParams defines parameters for GetHealth.
 type GetHealthParams struct {
 	// XCorrelationID Optional request ID. The API generates one when the supplied value is missing or invalid.
@@ -349,6 +413,26 @@ type GetLogsParams struct {
 	XCorrelationID *CorrelationID `json:"X-Correlation-ID,omitempty"`
 }
 
+// GetModelsParams defines parameters for GetModels.
+type GetModelsParams struct {
+	// XCorrelationID Optional request ID. The API generates one when the supplied value is missing or invalid.
+	XCorrelationID *CorrelationID `json:"X-Correlation-ID,omitempty"`
+}
+
+// InstallModelParams defines parameters for InstallModel.
+type InstallModelParams struct {
+	// XCorrelationID Optional request ID. The API generates one when the supplied value is missing or invalid.
+	XCorrelationID *CorrelationID `json:"X-Correlation-ID,omitempty"`
+}
+
+// SearchModelsParams defines parameters for SearchModels.
+type SearchModelsParams struct {
+	Q string `form:"q" json:"q"`
+
+	// XCorrelationID Optional request ID. The API generates one when the supplied value is missing or invalid.
+	XCorrelationID *CorrelationID `json:"X-Correlation-ID,omitempty"`
+}
+
 // GetOpenAPIParams defines parameters for GetOpenAPI.
 type GetOpenAPIParams struct {
 	// XCorrelationID Optional request ID. The API generates one when the supplied value is missing or invalid.
@@ -370,8 +454,14 @@ type GetToolsParams struct {
 // PostChatJSONRequestBody defines body for PostChat for application/json ContentType.
 type PostChatJSONRequestBody = ChatRequest
 
+// RunDatabaseQueryJSONRequestBody defines body for RunDatabaseQuery for application/json ContentType.
+type RunDatabaseQueryJSONRequestBody = DatabaseQueryRequest
+
 // PostJobJSONRequestBody defines body for PostJob for application/json ContentType.
 type PostJobJSONRequestBody = JobRequest
+
+// InstallModelJSONRequestBody defines body for InstallModel for application/json ContentType.
+type InstallModelJSONRequestBody = InstallModelRequest
 
 // Getter for additional properties for LogEntry. Returns the specified
 // element and whether it was found
@@ -517,6 +607,12 @@ type ServerInterface interface {
 	// PostChat Run one chat turn with the selected engine
 	// (POST /api/chat)
 	PostChat(w http.ResponseWriter, r *http.Request, params PostChatParams)
+	// ListDatabaseQueries List saved PostgreSQL queries
+	// (GET /api/database/queries)
+	ListDatabaseQueries(w http.ResponseWriter, r *http.Request, params ListDatabaseQueriesParams)
+	// RunDatabaseQuery Execute a saved query against PostgreSQL
+	// (POST /api/database/query)
+	RunDatabaseQuery(w http.ResponseWriter, r *http.Request, params RunDatabaseQueryParams)
 	// GetHealth Check whether the API process is alive
 	// (GET /api/health)
 	GetHealth(w http.ResponseWriter, r *http.Request, params GetHealthParams)
@@ -532,6 +628,15 @@ type ServerInterface interface {
 	// GetLogs List recent local process logs
 	// (GET /api/logs)
 	GetLogs(w http.ResponseWriter, r *http.Request, params GetLogsParams)
+	// GetModels List installed Ollama models available for selection
+	// (GET /api/models)
+	GetModels(w http.ResponseWriter, r *http.Request, params GetModelsParams)
+	// InstallModel Download a library model into local Ollama
+	// (POST /api/models/install)
+	InstallModel(w http.ResponseWriter, r *http.Request, params InstallModelParams)
+	// SearchModels Search the public Ollama Library
+	// (GET /api/models/search)
+	SearchModels(w http.ResponseWriter, r *http.Request, params SearchModelsParams)
 	// GetOpenAPI Download the API contract
 	// (GET /api/openapi.yaml)
 	GetOpenAPI(w http.ResponseWriter, r *http.Request, params GetOpenAPIParams)
@@ -584,6 +689,88 @@ func (siw *ServerInterfaceWrapper) PostChat(w http.ResponseWriter, r *http.Reque
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostChat(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDatabaseQueries operation middleware
+func (siw *ServerInterfaceWrapper) ListDatabaseQueries(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDatabaseQueriesParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Correlation-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Correlation-ID")]; found {
+		var XCorrelationID CorrelationID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Correlation-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Correlation-ID", valueList[0], &XCorrelationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Correlation-ID", Err: err})
+			return
+		}
+
+		params.XCorrelationID = &XCorrelationID
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDatabaseQueries(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RunDatabaseQuery operation middleware
+func (siw *ServerInterfaceWrapper) RunDatabaseQuery(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RunDatabaseQueryParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Correlation-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Correlation-ID")]; found {
+		var XCorrelationID CorrelationID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Correlation-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Correlation-ID", valueList[0], &XCorrelationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Correlation-ID", Err: err})
+			return
+		}
+
+		params.XCorrelationID = &XCorrelationID
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RunDatabaseQuery(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -798,6 +985,142 @@ func (siw *ServerInterfaceWrapper) GetLogs(w http.ResponseWriter, r *http.Reques
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetLogs(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetModels operation middleware
+func (siw *ServerInterfaceWrapper) GetModels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetModelsParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Correlation-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Correlation-ID")]; found {
+		var XCorrelationID CorrelationID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Correlation-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Correlation-ID", valueList[0], &XCorrelationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Correlation-ID", Err: err})
+			return
+		}
+
+		params.XCorrelationID = &XCorrelationID
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetModels(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// InstallModel operation middleware
+func (siw *ServerInterfaceWrapper) InstallModel(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params InstallModelParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Correlation-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Correlation-ID")]; found {
+		var XCorrelationID CorrelationID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Correlation-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Correlation-ID", valueList[0], &XCorrelationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Correlation-ID", Err: err})
+			return
+		}
+
+		params.XCorrelationID = &XCorrelationID
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.InstallModel(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SearchModels operation middleware
+func (siw *ServerInterfaceWrapper) SearchModels(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SearchModelsParams
+
+	// ------------- Required query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Correlation-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Correlation-ID")]; found {
+		var XCorrelationID CorrelationID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Correlation-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Correlation-ID", valueList[0], &XCorrelationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Correlation-ID", Err: err})
+			return
+		}
+
+		params.XCorrelationID = &XCorrelationID
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SearchModels(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1054,6 +1377,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/health", wrapper.GetHealth)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/ready", wrapper.GetReadiness)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/chat", wrapper.PostChat)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/models", wrapper.GetModels)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/models/search", wrapper.SearchModels)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/models/install", wrapper.InstallModel)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/database/queries", wrapper.ListDatabaseQueries)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/database/query", wrapper.RunDatabaseQuery)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/tools", wrapper.GetTools)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/logs", wrapper.GetLogs)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/jobs", wrapper.ListJobs)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,9 @@ func (c Client) request(ctx context.Context, method, path string, body io.Reader
 	defer func() {
 		logger := telemetry.Logger(ctx, "ollama-client")
 		attrs := []any{"method", method, "route", path, "status", status, "duration_ms", time.Since(start).Milliseconds()}
+		if path == "/api/chat" {
+			attrs = append(attrs, "model", c.Model)
+		}
 		if err != nil {
 			logger.Warn("ollama.request.failed", attrs...)
 		} else {
@@ -54,20 +58,35 @@ func (c Client) request(ctx context.Context, method, path string, body io.Reader
 	return json.NewDecoder(io.LimitReader(res.Body, 4<<20)).Decode(result)
 }
 
-func (c Client) Ready(ctx context.Context) error {
+type InstalledModel struct {
+	Name         string   `json:"name"`
+	Capabilities []string `json:"capabilities"`
+}
+
+func (m InstalledModel) SupportsTools() bool {
+	// Some Ollama versions omit capabilities from the model list.
+	return len(m.Capabilities) == 0 || slices.Contains(m.Capabilities, "tools")
+}
+
+func (c Client) ListModels(ctx context.Context) ([]InstalledModel, error) {
 	var result struct {
-		Models []struct {
-			Name string `json:"name"`
-		} `json:"models"`
+		Models []InstalledModel `json:"models"`
 	}
-	if err := c.request(ctx, http.MethodGet, "/api/tags", nil, &result); err != nil {
+	err := c.request(ctx, http.MethodGet, "/api/tags", nil, &result)
+	return result.Models, err
+}
+
+func (c Client) Ready(ctx context.Context) error {
+	models, err := c.ListModels(ctx)
+	if err != nil {
 		return err
 	}
+
 	model := c.Model
 	if !strings.Contains(model[strings.LastIndex(model, "/")+1:], ":") {
 		model += ":latest"
 	}
-	for _, entry := range result.Models {
+	for _, entry := range models {
 		if entry.Name == model {
 			return nil
 		}

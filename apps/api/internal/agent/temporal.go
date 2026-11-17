@@ -33,12 +33,13 @@ var ErrTemporal = errors.New("Temporal service unavailable")
 var ErrTemporalRun = errors.New("Temporal workflow failed")
 
 type TemporalEngine struct {
-	Client  client.Client
-	Timeout time.Duration
+	Client       client.Client
+	Timeout      time.Duration
+	DefaultModel string
 }
 
 func (e TemporalEngine) Reply(ctx context.Context, request chat.Request) (chat.Reply, error) {
-	run, err := e.start(ctx, "lab-chat-"+request.RunID, temporalWorkflow, request.Messages, "")
+	run, err := e.start(ctx, "lab-chat-"+request.RunID, temporalWorkflow, request.Messages, "", request.Model)
 	if err != nil {
 		return chat.Reply{}, err
 	}
@@ -62,21 +63,25 @@ func (e TemporalEngine) Reply(ctx context.Context, request chat.Request) (chat.R
 
 // Both entry points use a stable workflow ID. Temporal rejects duplicate IDs
 // and the saved fingerprint lets a retry reattach only to the original input.
-func (e TemporalEngine) start(ctx context.Context, id, workflowName string, messages []chat.Message, prompt string) (client.WorkflowRun, error) {
+func (e TemporalEngine) start(ctx context.Context, id, workflowName string, messages []chat.Message, prompt, model string) (client.WorkflowRun, error) {
 	input, err := json.Marshal(messages)
 	if err != nil {
 		return nil, err
 	}
 	hash := sha256.Sum256(input)
 	fingerprint := hex.EncodeToString(hash[:])
+	chosen := model
+	if chosen == "" {
+		chosen = e.DefaultModel
+	}
 	run, err := e.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                                       id,
 		TaskQueue:                                temporalQueue,
 		WorkflowExecutionTimeout:                 max(15*time.Minute, 2*e.Timeout),
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
-		Memo:                                     map[string]any{"inputHash": fingerprint, "prompt": prompt, "correlationId": telemetry.Correlation(ctx)},
-	}, workflowName, workflowInput{Messages: messages, ModelTimeout: e.Timeout})
+		Memo:                                     map[string]any{"inputHash": fingerprint, "prompt": prompt, "model": chosen, "correlationId": telemetry.Correlation(ctx)},
+	}, workflowName, workflowInput{Messages: messages, ModelTimeout: e.Timeout, Model: chosen})
 	logger := telemetry.Logger(ctx, "temporal-client").With("workflow_id", id)
 	var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &alreadyStarted) {
@@ -89,23 +94,31 @@ func (e TemporalEngine) start(ctx context.Context, id, workflowName string, mess
 		if data == nil || converter.GetDefaultDataConverter().FromPayload(data, &existingHash) != nil || existingHash != fingerprint {
 			return nil, ErrRunInput
 		}
+		if saved := existing.GetWorkflowExecutionInfo().GetMemo().GetFields()["model"]; saved != nil && model != "" {
+			var recorded string
+			if converter.GetDefaultDataConverter().FromPayload(saved, &recorded) != nil || recorded != model {
+				return nil, ErrRunInput
+			}
+		}
 		logger.Info("workflow.reattached")
 		run = e.Client.GetWorkflow(ctx, id, existing.GetWorkflowExecutionInfo().GetExecution().GetRunId())
 	} else if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrTemporal, err)
 	} else {
-		logger.Info("workflow.submitted")
+		logger.Info("workflow.submitted", "model", chosen)
 	}
 
 	return run, nil
 }
 
 type workflowInput struct {
+	Model        string
 	Messages     []chat.Message
 	ModelTimeout time.Duration
 }
 
 type modelInput struct {
+	Model    string
 	Messages []ollama.Message
 	Tools    []ollama.Tool
 	Rounds   int
@@ -126,18 +139,18 @@ func inventoryWorkflow(ctx workflow.Context, input workflowInput) (chat.Reply, e
 		StartToCloseTimeout: input.ModelTimeout, HeartbeatTimeout: 10 * time.Second, RetryPolicy: retry,
 	})
 	logger := workflow.GetLogger(ctx)
-	logger.Info("workflow.started", telemetry.CorrelationField, telemetry.WorkflowCorrelation(ctx))
+	logger.Info("workflow.started", telemetry.CorrelationField, telemetry.WorkflowCorrelation(ctx), "model", input.Model)
 	var tools []ollama.Tool
 	if err := workflow.ExecuteActivity(quick, discoverActivity).Get(ctx, &tools); err != nil {
 		return chat.Reply{}, err
 	}
 	t := turn{messages: modelMessages(input.Messages), tools: tools, allowed: toolNames(tools), reply: chat.Reply{
-		Engine: chat.EngineTemporal, RunID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		Engine: chat.EngineTemporal, Model: input.Model, RunID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}}
 	for {
 		var message ollama.Message
 		if err := workflow.ExecuteActivity(model, modelActivity, modelInput{
-			Messages: t.messages, Tools: t.tools, Rounds: t.rounds, Calls: len(t.reply.Tools),
+			Model: input.Model, Messages: t.messages, Tools: t.tools, Rounds: t.rounds, Calls: len(t.reply.Tools),
 		}).Get(ctx, &message); err != nil {
 			return chat.Reply{}, err
 		}
@@ -205,7 +218,7 @@ func (a Agent) temporalAskModel(ctx context.Context, input modelInput) (ollama.M
 			}
 		}
 	}()
-	message, err := a.askModel(ctx, input.Messages, input.Tools, input.Rounds, input.Calls)
+	message, err := a.withModel(input.Model).askModel(ctx, input.Messages, input.Tools, input.Rounds, input.Calls)
 	if errors.Is(err, ErrToolLimit) {
 		return ollama.Message{}, temporal.NewNonRetryableApplicationError(err.Error(), toolLimitType, err)
 	}

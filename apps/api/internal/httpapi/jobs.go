@@ -15,7 +15,7 @@ import (
 )
 
 type JobService interface {
-	StartJob(context.Context, string, string) (agent.Job, error)
+	StartJob(context.Context, string, string, string) (agent.Job, error)
 	ListJobs(context.Context) ([]agent.Job, error)
 	GetJob(context.Context, string) (agent.Job, error)
 }
@@ -44,13 +44,20 @@ func (s server) PostJob(w http.ResponseWriter, r *http.Request, _ contract.PostJ
 		fail(w, http.StatusBadRequest, "Job key must contain 16–64 letters, digits, underscores or hyphens.")
 		return
 	}
+	var model string
+	if input.Model != nil {
+		model = *input.Model
+	}
+	if !s.checkModel(w, r, model) {
+		return
+	}
 	if s.diagnostics.Jobs == nil {
 		jobError(w, agent.ErrTemporal)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	job, err := s.diagnostics.Jobs.StartJob(ctx, key, input.Prompt)
+	job, err := s.diagnostics.Jobs.StartJob(ctx, key, input.Prompt, model)
 	if err != nil {
 		jobError(w, err)
 		return
@@ -103,7 +110,7 @@ func jobError(w http.ResponseWriter, err error) {
 	case errors.Is(err, agent.ErrJobNotFound):
 		fail(w, http.StatusNotFound, "Inventory job not found.")
 	case errors.Is(err, agent.ErrRunInput):
-		fail(w, http.StatusConflict, "That job key belongs to a different prompt.")
+		fail(w, http.StatusConflict, "That job key belongs to a different prompt or model.")
 	default:
 		fail(w, http.StatusServiceUnavailable, "Background jobs are unavailable. Start the Temporal server.")
 	}
@@ -122,6 +129,9 @@ func toAPIJob(job agent.Job) contract.Job {
 	body := contract.Job{
 		Id: job.ID, Prompt: job.Prompt, Status: contract.JobStatus(job.Status),
 		StartedAt: job.StartedAt, FinishedAt: job.FinishedAt,
+	}
+	if job.Model != "" {
+		body.Model = &job.Model
 	}
 	if job.CorrelationID != "" {
 		body.CorrelationId = &job.CorrelationID

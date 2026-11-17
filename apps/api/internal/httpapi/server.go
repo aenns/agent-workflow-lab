@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-workflow-lab/apps/api/internal/agent"
 	"agent-workflow-lab/apps/api/internal/chat"
 	"agent-workflow-lab/apps/api/internal/checkpoint"
 	"agent-workflow-lab/apps/api/internal/httpapi/contract"
+	"agent-workflow-lab/apps/api/internal/ollama"
 	"agent-workflow-lab/apps/api/internal/telemetry"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -30,9 +32,13 @@ type ChatService interface {
 var runIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{16,64}$`)
 
 type Diagnostics struct {
-	Jobs       JobService
-	ListTools  func(context.Context) ([]*mcp.Tool, error)
-	RecentLogs func() ([]json.RawMessage, error)
+	InspectDatabase func(context.Context, checkpoint.SavedQuery, string) (checkpoint.QueryResult, error)
+	SearchLibrary   func(context.Context, string) ([]ollama.LibraryModel, error)
+	PullModel       func(context.Context, string, func(ollama.PullProgress) error) error
+	ListModels      func(context.Context) ([]ollama.InstalledModel, error)
+	Jobs            JobService
+	ListTools       func(context.Context) ([]*mcp.Tool, error)
+	RecentLogs      func() ([]json.RawMessage, error)
 }
 
 type server struct {
@@ -40,11 +46,12 @@ type server struct {
 	name        string
 	timeout     time.Duration
 	diagnostics Diagnostics
+	download    *sync.Mutex
 }
 
 // The generated router ties these handlers to operation IDs in openapi.yaml.
 func Handler(service ChatService, name string, timeout time.Duration, diagnostics Diagnostics) http.Handler {
-	handler := contract.HandlerWithOptions(server{service: service, name: name, timeout: timeout, diagnostics: diagnostics}, contract.StdHTTPServerOptions{
+	handler := contract.HandlerWithOptions(server{service: service, name: name, timeout: timeout, diagnostics: diagnostics, download: &sync.Mutex{}}, contract.StdHTTPServerOptions{
 		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			fail(w, http.StatusBadRequest, "Invalid request parameters.")
 		},
@@ -102,6 +109,9 @@ func (s server) PostChat(w http.ResponseWriter, r *http.Request, _ contract.Post
 		fail(w, http.StatusBadRequest, "Choose the loop, state-machine, or temporal engine.")
 		return
 	}
+	if !s.checkModel(w, r, input.Model) {
+		return
+	}
 	if input.Engine == chat.EngineStateMachine || input.Engine == chat.EngineTemporal {
 		if input.RunID == "" {
 			input.RunID = rand.Text()
@@ -149,7 +159,7 @@ func (s server) PostChat(w http.ResponseWriter, r *http.Request, _ contract.Post
 		}
 		return
 	}
-	logger.Info("chat.completed", "tool_count", len(reply.Tools))
+	logger.Info("chat.completed", "tool_count", len(reply.Tools), "model", reply.Model)
 	writeJSON(w, http.StatusOK, toAPIReply(reply))
 }
 

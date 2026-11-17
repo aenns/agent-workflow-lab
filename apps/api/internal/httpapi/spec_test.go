@@ -12,8 +12,10 @@ import (
 
 	"agent-workflow-lab/apps/api/internal/agent"
 	"agent-workflow-lab/apps/api/internal/chat"
+	"agent-workflow-lab/apps/api/internal/checkpoint"
 	"agent-workflow-lab/apps/api/internal/httpapi"
 	"agent-workflow-lab/apps/api/internal/httpapi/contract"
+	"agent-workflow-lab/apps/api/internal/ollama"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -46,8 +48,8 @@ type specJobs struct{}
 
 const specJobID = "lab-job-demo-request-1234"
 
-func (specJobs) StartJob(_ context.Context, key, prompt string) (agent.Job, error) {
-	return agent.Job{ID: agent.JobPrefix + key, Prompt: prompt, Status: "running", StartedAt: time.Now()}, nil
+func (specJobs) StartJob(_ context.Context, key, prompt, model string) (agent.Job, error) {
+	return agent.Job{ID: agent.JobPrefix + key, Prompt: prompt, Model: model, Status: "running", StartedAt: time.Now()}, nil
 }
 func (specJobs) ListJobs(context.Context) ([]agent.Job, error) {
 	return []agent.Job{{ID: specJobID, Prompt: "Check stock.", Status: "completed", StartedAt: time.Now()}}, nil
@@ -71,7 +73,19 @@ func TestOpenAPIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	diagnostics := httpapi.Diagnostics{
+		InspectDatabase: func(_ context.Context, query checkpoint.SavedQuery, _ string) (checkpoint.QueryResult, error) {
+			if query.ID != "recent-runs" {
+				t.Fatalf("unexpected saved query: %s", query.ID)
+			}
+			return checkpoint.QueryResult{Columns: []string{"run_id", "model"}, Rows: [][]any{{"demo-run-1234567", nil}}}, nil
+		},
 		Jobs: specJobs{},
+		ListModels: func(context.Context) ([]ollama.InstalledModel, error) {
+			return []ollama.InstalledModel{
+				{Name: "qwen3:14b", Capabilities: []string{"tools"}},
+				{Name: "embedding-only", Capabilities: []string{"embedding"}},
+			}, nil
+		},
 		ListTools: func(context.Context) ([]*mcp.Tool, error) {
 			return []*mcp.Tool{{Name: "lookup_inventory", Description: "Look up stock", InputSchema: map[string]any{"type": "object"}}}, nil
 		},
@@ -97,6 +111,12 @@ func TestOpenAPIContract(t *testing.T) {
 		{name: "job result", method: "GET", path: "/api/jobs/" + specJobID, status: 200},
 		{name: "job missing", method: "GET", path: "/api/jobs/lab-job-missing-request-1234", status: 404},
 		{name: "blank job", method: "POST", path: "/api/jobs", body: `{"prompt":" "}`, status: 400},
+		{name: "models", method: "GET", path: "/api/models", status: 200},
+		{name: "incompatible model", method: "POST", path: "/api/chat", body: chatBody + `,"model":"embedding-only"}`, status: 400},
+		{name: "database catalog", method: "GET", path: "/api/database/queries", status: 200},
+		{name: "database results", method: "POST", path: "/api/database/query", body: `{"queryId":"recent-runs"}`, status: 200},
+		{name: "database requires run ID", method: "POST", path: "/api/database/query", body: `{"queryId":"run-history"}`, status: 400},
+		{name: "database rejects SQL", method: "POST", path: "/api/database/query", body: `{"queryId":"recent-runs","sql":"DELETE FROM langgraph_checkpoints"}`, status: 400},
 		{name: "health", method: "GET", path: "/api/health", status: 200},
 		{name: "ready", method: "GET", path: "/api/ready", status: 200},
 		{name: "unavailable", method: "GET", path: "/api/ready", service: specService{readyErr: agent.ErrMCP}, status: 503},

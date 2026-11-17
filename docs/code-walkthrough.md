@@ -29,3 +29,13 @@ In the chat, **Run in background** posts a standalone prompt to `POST /api/jobs`
 ## Tracing a turn
 
 The browser sends a correlation ID through [the TypeScript request helper](../apps/web/src/telemetry.ts). The [Go telemetry package](../apps/api/internal/telemetry/log.go) places it in the request context. MCP carries it in request metadata and Temporal carries it in workflow and activity headers. Use **View logs** under a chat reply or job report to see the events for that ID.
+
+## How model selection and installation work
+
+The [model library](../apps/web/src/model-library.tsx) searches public Ollama tags and reads download progress one JSON line at a time. The [Go library client](../apps/api/internal/ollama/library.go) checks that a tag has a downloadable model layer. The [install handler](../apps/api/internal/httpapi/model_install.go) streams progress from the local Ollama process. After installation, the browser refreshes the installed-model catalog.
+
+The selected tag is part of a chat or job request. A new LangGraphGo checkpoint or Temporal workflow records the resolved model, including the configured default, so a resumed run uses the model it started with.
+
+## Where the Database tab gets its results
+
+[Saved queries](../apps/api/internal/checkpoint/inspect.go) are defined alongside the PostgreSQL checkpoint adapter. The browser sends a query ID and, where needed, a run ID. The adapter supplies the run ID as a PostgreSQL parameter and executes the saved query in a read-only transaction. Each query returns columns and rows for the results table in [database.tsx](../apps/web/src/database.tsx).

@@ -75,6 +75,7 @@ func (a Agent) discover(ctx context.Context) ([]ollama.Tool, error) {
 func (a Agent) Reply(ctx context.Context, request chat.Request) (chat.Reply, error) {
 	switch request.Engine {
 	case chat.EngineLoop:
+		a = a.withModel(request.Model)
 		turn, err := a.newTurn(ctx, request.Messages, request.Engine)
 		if err != nil {
 			return chat.Reply{}, err
@@ -94,6 +95,14 @@ func (a Agent) Reply(ctx context.Context, request chat.Request) (chat.Reply, err
 
 // A turn accumulates the model transcript and the tool trace returned to
 // React. The transcript includes intermediate messages that the UI omits.
+// Agent is copied so parallel turns can select models independently.
+func (a Agent) withModel(name string) Agent {
+	if name != "" {
+		a.Model.Model = name
+	}
+	return a
+}
+
 type turn struct {
 	agent    Agent
 	messages []ollama.Message
@@ -109,7 +118,7 @@ func (a Agent) newTurn(ctx context.Context, history []chat.Message, engine chat.
 		return nil, err
 	}
 
-	return &turn{agent: a, messages: modelMessages(history), tools: tools, allowed: toolNames(tools), reply: chat.Reply{Engine: engine}}, nil
+	return &turn{agent: a, messages: modelMessages(history), tools: tools, allowed: toolNames(tools), reply: chat.Reply{Engine: engine, Model: a.Model.Model}}, nil
 
 }
 

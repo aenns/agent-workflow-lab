@@ -17,6 +17,7 @@ type Message struct {
 }
 
 type Request struct {
+	Model    string    `json:"model,omitempty"`
 	Messages []Message `json:"messages"`
 	Engine   Engine    `json:"engine"`
 	RunID    string    `json:"runId,omitempty"`
@@ -29,6 +30,7 @@ type TokenUsage struct {
 }
 
 type Reply struct {
+	Model   string       `json:"model,omitempty"`
 	Usage   []TokenUsage `json:"usage,omitempty"`
 	RunID   string       `json:"runId,omitempty"`
 	Engine  Engine       `json:"engine"`

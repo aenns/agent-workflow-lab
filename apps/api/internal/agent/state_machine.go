@@ -117,12 +117,12 @@ func (a Agent) loadGraphState(ctx context.Context, store graph.CheckpointStore, 
 		if err != nil {
 			return graphState{}, fmt.Errorf("%w: %w", ErrCheckpoint, err)
 		}
-		if state.Input != hash {
+		if state.Input != hash || (request.Model != "" && state.Reply.Model != "" && state.Reply.Model != request.Model) {
 			return graphState{}, ErrRunInput
 		}
 		return state, nil
 	}
-	t, err := a.newTurn(ctx, request.Messages, request.Engine)
+	t, err := a.withModel(request.Model).newTurn(ctx, request.Messages, request.Engine)
 	if err != nil {
 		return graphState{}, err
 	}
@@ -132,7 +132,7 @@ func (a Agent) loadGraphState(ctx context.Context, store graph.CheckpointStore, 
 }
 
 func (a Agent) modelNode(ctx context.Context, state graphState) (graphState, error) {
-	t := turn{agent: a, messages: state.Messages, tools: state.Tools, rounds: state.Rounds, reply: state.Reply}
+	t := turn{agent: a.withModel(state.Reply.Model), messages: state.Messages, tools: state.Tools, rounds: state.Rounds, reply: state.Reply}
 	message, err := t.askModel(ctx)
 	if err != nil {
 		return state, err

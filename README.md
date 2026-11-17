@@ -2,6 +2,12 @@
 
 The lab compares three ways to run the same AI chat turn. The Go loop runs in memory, LangGraphGo saves graph checkpoints to PostgreSQL, and Temporal saves workflow history and gives work to a separate worker. All three use the same React chat, Ollama model, and Go MCP inventory server.
 
+## Demo
+
+The quickest demo is [worker downtime](#demo-worker-downtime). Stop the Temporal worker, submit an inventory audit, restart the worker, and open the completed report. The same job moves from queued to completed. Its report includes the MCP tool results, model and token counts, and a link to correlated logs.
+
+The **API reference** can run test requests from the OpenAPI contract. **MCP tools** lists live tool schemas, **Database** runs read-only checkpoint queries, and **Models** searches the Ollama Library and installs local models.
+
 ## Quick start
 
 Install Go 1.27+, Node.js 24 with npm, and Ollama. Open the Ollama app, then run `ollama pull qwen3:14b` if the model is missing from `ollama list`.
@@ -20,6 +26,14 @@ Start Docker Desktop for the engines below that use a database or workflow serve
 | Temporal | `make dev-temporal`, then `make dev-worker` in another terminal | A separate worker uses Temporal history to replay the workflow and recover completed activity results. |
 
 The API launches an inventory MCP child process. The Temporal worker launches its own copy. Ollama runs on the host, and its first response may take longer while loading the model.
+
+## Compare Ollama models
+
+The **Model** picker lists installed tags. Select **Add models** to search the public Ollama Library or enter an exact tag such as `qwen3.5:9b`. Click **Install** to download the model to local Ollama. The progress bar reports the current layer, and the app refreshes the picker and selects the new model when it supports tools. Downloads can continue as you switch views within the lab. Keep the tab open during installation.
+
+Search uses the public Ollama Library website and verifies tags against the Ollama registry. Only tags with downloadable model weights are offered. If search is unavailable, paste a library tag into **Install by tag**. The app accepts public library tags such as `qwen3.5:9b`. The picker hides models that explicitly report they lack tool support. Some Ollama versions omit capability information, so test an unfamiliar model with an MCP prompt.
+
+Choose a model before sending a message or starting a background audit. The reply, job report, and correlated Ollama call logs show the selected model. The **Configured default** uses `OLLAMA_MODEL`. New durable runs save the resolved model with their state. Changing the picker for a pending chat turn starts a new run.
 
 ## How the pieces fit together
 
@@ -79,6 +93,10 @@ LangGraphGo automatically writes a PostgreSQL checkpoint after every successful 
 If the API stops mid-turn, restart it, then select **Resume saved run** in the same browser tab. The tab remembers the run ID and request text even after a reload. For API clients, send the same `runId` and original messages again. Reusing a completed run ID returns the saved reply. An interrupted operation can run again if the process stopped before its checkpoint committed.
 
 ### Inspect checkpoints in PostgreSQL
+
+Open **Database** in the lab to run saved queries for recent runs, checkpoint history, tool results, per-call token usage, and the latest JSON state. Select a run ID in the results to load it into the history query, or choose **Inspect checkpoints** under a state-machine reply. **View SQL** shows the statement the app will execute. Queries for a single run accept a Run ID. The server only executes saved read-only queries.
+
+The Database view covers LangGraphGo’s PostgreSQL storage. Temporal job reports appear in **Jobs**, and Temporal execution history is available in the [Temporal UI](http://127.0.0.1:8233).
 
 Run `make dev-db` if PostgreSQL is stopped. Send at least one message using **State machine** to create a checkpoint. Then open the PostgreSQL terminal from the project folder.
 
@@ -160,7 +178,7 @@ For example, run `API_ADDR=127.0.0.1:8090 make dev-api` and `API_PROXY_TARGET=ht
 
 ## JSON logging and correlation IDs
 
-In the app, open **API reference** to browse the OpenAPI contract and send a test request. Open **MCP tools** to inspect the live tool list and input schemas. From a chat reply, select **View logs** to filter the **Logs** view to that turn’s correlation ID. You can also filter by service and level.
+In the app, open **API reference** to browse the OpenAPI contract and send a test request. Open **MCP tools** to inspect the live tool list and input schemas. From a chat reply, select **View logs** to filter the **Logs** view to that turn’s correlation ID. You can also filter by date, service, and level. Log timestamps and date filtering use the browser’s local time zone.
 
 The viewer shows up to 500 recent backend events and 100 browser events from the current tab. The API, MCP child processes, and Temporal worker keep bounded log files in `.lab/logs`. Set `LAB_LOG_DIR` to the same directory for the API and worker if you customize the location.
 

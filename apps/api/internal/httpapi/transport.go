@@ -9,6 +9,9 @@ import (
 // types, which can evolve separately from the public wire contract.
 func toChatRequest(body contract.ChatRequest) chat.Request {
 	request := chat.Request{Messages: make([]chat.Message, 0, len(body.Messages))}
+	if body.Model != nil {
+		request.Model = *body.Model
+	}
 	if body.Engine != nil {
 		request.Engine = chat.Engine(*body.Engine)
 	}
@@ -25,6 +28,9 @@ func toAPIReply(reply chat.Reply) contract.ChatReply {
 	body := contract.ChatReply{
 		Engine:  contract.Engine(reply.Engine),
 		Message: contract.AssistantMessage{Role: contract.AssistantMessageRole(reply.Message.Role), Content: reply.Message.Content},
+	}
+	if reply.Model != "" {
+		body.Model = &reply.Model
 	}
 	if reply.RunID != "" {
 		body.RunId = &reply.RunID

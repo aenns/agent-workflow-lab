@@ -156,6 +156,7 @@ func (s *testCheckpointStore) Save(ctx context.Context, cp *graph.Checkpoint) er
 func TestChatRunsDependentMCPTools(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
+			Model    string
 			Messages []ollama.Message
 			Tools    []ollama.Tool
 		}
@@ -164,7 +165,7 @@ func TestChatRunsDependentMCPTools(t *testing.T) {
 			w.WriteHeader(400)
 			return
 		}
-		if len(input.Tools) != 2 || len(input.Messages) == 0 {
+		if input.Model != "qwen-alt:9b" || len(input.Tools) != 2 || len(input.Messages) == 0 {
 			t.Error("expected discovered tools and conversation")
 			w.WriteHeader(400)
 			return
@@ -190,7 +191,11 @@ func TestChatRunsDependentMCPTools(t *testing.T) {
 	defer upstream.Close()
 	model := ollama.Client{BaseURL: upstream.URL, Model: "qwen3:14b", HTTP: upstream.Client()}
 	store := &testCheckpointStore{CheckpointStore: graph.NewMemoryCheckpointStore()}
-	handler := httpapi.Handler(agent.Agent{Model: model, Tools: toolSession(t), Checkpoints: store}, model.Model, time.Second, httpapi.Diagnostics{})
+	handler := httpapi.Handler(agent.Agent{Model: model, Tools: toolSession(t), Checkpoints: store}, model.Model, time.Second, httpapi.Diagnostics{
+		ListModels: func(context.Context) ([]ollama.InstalledModel, error) {
+			return []ollama.InstalledModel{{Name: "qwen-alt:9b", Capabilities: []string{"tools"}}, {Name: "qwen3:14b"}}, nil
+		},
+	})
 	for _, tc := range []struct {
 		engine chat.Engine
 		states []string
@@ -200,13 +205,13 @@ func TestChatRunsDependentMCPTools(t *testing.T) {
 	} {
 		t.Run(string(tc.engine), func(t *testing.T) {
 			response := httptest.NewRecorder()
-			body := `{"engine":"` + string(tc.engine) + `","runId":"test-checkpoint-1234","messages":[{"role":"user","content":"Is LAMP-42 in stock, and when can I pick it up?"}]}`
+			body := `{"engine":"` + string(tc.engine) + `","model":"qwen-alt:9b","runId":"test-checkpoint-1234","messages":[{"role":"user","content":"Is LAMP-42 in stock, and when can I pick it up?"}]}`
 			handler.ServeHTTP(response, httptest.NewRequest("POST", "/api/chat", strings.NewReader(body)))
 			var reply chat.Reply
 			if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &reply) != nil {
 				t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
 			}
-			if reply.Engine != tc.engine || !slices.Equal(reply.States, tc.states) {
+			if reply.Model != "qwen-alt:9b" || reply.Engine != tc.engine || !slices.Equal(reply.States, tc.states) {
 				t.Fatalf("unexpected engine or states: %+v", reply)
 			}
 			if len(reply.Tools) != 2 || reply.Tools[0].Name != "lookup_inventory" || reply.Tools[1].Name != "warehouse_hours" ||
@@ -224,6 +229,12 @@ func TestChatRunsDependentMCPTools(t *testing.T) {
 			}
 
 			if tc.engine == chat.EngineStateMachine {
+				conflict := httptest.NewRecorder()
+				changed := strings.Replace(body, "qwen-alt:9b", "qwen3:14b", 1)
+				handler.ServeHTTP(conflict, httptest.NewRequest("POST", "/api/chat", strings.NewReader(changed)))
+				if conflict.Code != 409 {
+					t.Fatalf("expected model change to conflict with existing run: %d %s", conflict.Code, conflict.Body)
+				}
 				checkpoints, err := store.ListByThread(t.Context(), reply.RunID)
 				if err != nil || len(checkpoints) != 5 || reply.RunID != "test-checkpoint-1234" {
 					t.Fatalf("expected five checkpoints, got %d: %v", len(checkpoints), err)
