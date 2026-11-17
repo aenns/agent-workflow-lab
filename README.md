@@ -2,11 +2,9 @@
 
 The lab compares three ways to run the same AI chat turn. The Go loop runs in memory, LangGraphGo saves graph checkpoints to PostgreSQL, and Temporal saves workflow history and gives work to a separate worker. All three use the same React chat, Ollama model, and Go MCP inventory server.
 
-## Demo
+## Demo walkthrough
 
-The quickest demo is [worker downtime](#demo-worker-downtime). Stop the Temporal worker, submit an inventory audit, restart the worker, and open the completed report. The same job moves from queued to completed. Its report includes the MCP tool results, model and token counts, and a link to correlated logs.
-
-The **API reference** can run test requests from the OpenAPI contract. **MCP tools** lists live tool schemas, **Database** runs read-only checkpoint queries, and **Models** searches the Ollama Library and installs local models.
+Use the [quick start](#quick-start) to send an inventory question and inspect the MCP calls. Then try the [Temporal worker restart demo](#demo-worker-downtime) to see the same background job wait while the worker is offline, complete when it returns, and surface an in-app notification. The report shows the tool results, model, token counts, and correlated logs.
 
 ## Quick start
 
@@ -78,6 +76,8 @@ Start the Temporal server and worker with `make dev-temporal` and `make dev-work
 Switch views or close the browser tab while the job runs. When you open the lab again, the **Jobs** badge and in-app banner show jobs that finished while you were away. Open a completed job to see its report, tool calls, token usage, and correlated logs. Opening a finished job acknowledges its notification in that browser. Temporal stores the jobs and reports, and the list shows up to 50 recent jobs.
 
 ### Demo worker downtime
+
+Use the background audit prompt above for this walkthrough.
 
 1. Keep the Temporal server, API, and web app running. Press **Control+C** in the worker terminal.
 2. Submit the audit with **Run in background**. The Jobs view should show **Queued or running** while the worker is offline.
