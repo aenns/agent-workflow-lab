@@ -1,6 +1,6 @@
 # Local AI Agent & MCP Workflow Lab
 
-The lab compares three ways to run the same AI chat turn. The Go loop runs in memory, LangGraphGo saves graph checkpoints to PostgreSQL, and Temporal saves workflow history and gives work to a separate worker. All three use the same React chat, Ollama model, and Go MCP inventory server.
+The lab compares three ways to run the same AI chat turn in Go and TypeScript. The direct loop runs in memory, LangGraph saves checkpoints to PostgreSQL, and Temporal durably schedules work for a separate worker. Both backends use the same React app and local Ollama instance. Each has its own MCP inventory server with the same demo tools.
 
 ## Demo walkthrough
 
@@ -8,7 +8,7 @@ Use the [quick start](#quick-start) to send an inventory question and inspect th
 
 ## macOS shortcuts
 
-In Finder, open the project folder and double-click **Start Lab.command**. It opens Docker Desktop and Ollama if needed, starts PostgreSQL, Temporal, the Go API, the worker, and the web app, then opens the lab in Chrome. Install the prerequisites below and pull the model once before using the shortcut. Leave the launcher Terminal window open while the lab runs.
+In Finder, open the project folder and double-click **Start Lab.command**. It opens Docker Desktop and Ollama if needed, starts PostgreSQL, Temporal, the Go and TypeScript APIs and workers, and the web app, then opens the lab in Chrome. Install the prerequisites below and pull the model once before using the shortcut. Leave the launcher Terminal window open while the lab runs.
 
 Double-click **Stop Lab.command** or press **Control+C** in the launcher Terminal window to stop the lab processes and containers. Checkpoints and workflow history are retained. Chrome, Docker Desktop, and Ollama stay open because other apps may use them. If you started the API or web app manually, stop those terminals before using the shortcuts.
 
@@ -32,6 +32,17 @@ Start Docker Desktop for the engines below that use a database or workflow serve
 | Temporal | `make dev-temporal`, then `make dev-worker` in another terminal | A separate worker uses Temporal history to replay the workflow and recover completed activity results. |
 
 The API launches an inventory MCP child process. The Temporal worker launches its own copy. Ollama runs on the host, and its first response may take longer while loading the model.
+
+## Run the TypeScript backend
+
+Run `make install`, then run `make dev-api-ts` and `make dev-web` in separate terminals. Open [the local lab](http://127.0.0.1:5173) and select **TypeScript** from **Backend**. The TypeScript API listens on port 8081 and launches its own TypeScript MCP server over stdio. The direct loop requires Ollama and the configured model.
+
+- For **State machine**, start PostgreSQL with `make dev-db`. LangGraph checkpoints use the `workflow_lab_typescript` schema. The **Database** panel reads the selected backend's checkpoints.
+- For **Temporal** and **Run in background**, run `make dev-temporal` and `make dev-worker-ts`. The TypeScript worker polls its own task queue. To verify recovery, submit a background audit with that worker stopped and restart it to complete the same job.
+- Open **View logs** on a reply or job to filter by its correlation ID. TypeScript JSON records include `"backend":"typescript"` and identify the API, worker, or MCP server in the `service` field.
+- Set `TS_API_PORT` to change the TypeScript listener and `TS_API_PROXY_TARGET` to match it in Vite. `TS_CHAT_TIMEOUT_MS` overrides the default three-minute wait for chat. Both implementations serve the same OpenAPI document.
+
+To compare the implementations, keep both APIs running and change **Backend** in the header. The API reference, MCP tools, jobs, and database follow that selection. A saved run belongs to the backend that created it.
 
 ## Compare Ollama models
 
@@ -59,14 +70,18 @@ See the [code walkthrough](docs/code-walkthrough.md) for the path from the chat 
 
 ## Compare the engines
 
-1. Select **Go loop** and ask “Is LAMP-42 in stock, and what are the pickup hours at its warehouse?” Expand the tool calls to see their arguments and results.
+Choose **Go** or **TypeScript** in the **Backend** picker. Use the same model and a fresh chat for each run.
+
+1. Select the direct loop for your backend and ask “Is LAMP-42 in stock, and what are the pickup hours at its warehouse?” Expand the tool calls to see their arguments and results.
 2. Select **New chat** to clear the conversation, choose **State machine**, and ask the same question.
 3. Expand the tool calls and **State transitions** on the state-machine reply.
 4. Start a new chat, choose **Temporal**, and send the same question. Expand the tool calls and use the reply’s **Workflow ID** to find its history in the [Temporal UI](http://127.0.0.1:8233).
 
 The Go loop calls the model, runs any requested tools, and repeats until the model answers. The state-machine engine uses [LangGraphGo](https://github.com/smallnest/langgraphgo) to schedule two graph nodes, one for Ollama and one for the next MCP tool call. A two-step tool request typically visits **Ask model → Run tools → Ask model → Run tools → Ask model → Complete**. All three engines share the same tools and limits. The Go loop keeps its working state in memory. The state machine uses PostgreSQL checkpoints. Reply wording and tool selection can vary across model runs.
 
-## Temporal workflow and worker restart
+Go displays one **Run tools** transition per batch. TypeScript displays one per tool call. Both save a checkpoint after each successful tool call. Expand **Tool calls** to compare the actual calls across runs.
+
+## Temporal workflow and worker restart (Go)
 
 Start the Temporal server with `make dev-temporal`. Start or restart the separate Go worker with `make dev-worker`. The worker polls the `workflow-lab-chat` task queue and owns its MCP child process. Leave the API and web app running so the browser can receive the final reply.
 
@@ -104,7 +119,7 @@ If the API stops mid-turn, restart it, then select **Resume saved run** in the s
 
 Open **Database** in the lab to run saved queries for recent runs, checkpoint history, tool results, per-call token usage, and the latest JSON state. Select a run ID in the results to load it into the history query, or choose **Inspect checkpoints** under a state-machine reply. **View SQL** shows the statement the app will execute. Queries for a single run accept a Run ID. The server only executes saved read-only queries.
 
-The Database view covers LangGraphGo’s PostgreSQL storage. Temporal job reports appear in **Jobs**, and Temporal execution history is available in the [Temporal UI](http://127.0.0.1:8233).
+The Database view uses the selected backend’s PostgreSQL schema. The SQL examples below use the Go schema. TypeScript stores its checkpoints in `workflow_lab_typescript` and decodes saved state through the LangGraph PostgreSQL saver. Temporal job reports appear in **Jobs**, and Temporal execution history is available in the [Temporal UI](http://127.0.0.1:8233).
 
 Run `make dev-db` if PostgreSQL is stopped. Send at least one message using **State machine** to create a checkpoint. Then open the PostgreSQL terminal from the project folder.
 
@@ -137,6 +152,8 @@ The checkpoint volume stores prompts and tool outputs locally. **New chat** clea
 
 ## Try the MCP tools
 
+In a new chat, select the **Check stock for LAMP-42 and MUG-17** suggestion and send it. Check the tool trace for both inventory lookups and pickup hours for the north and south warehouses. The reply should distinguish the seven available desk lamps from the out-of-stock mug.
+
 - **No tools:** “Say hello in one sentence.”
 - **Inventory:** “How many LAMP-42 desk lamps are in stock?” The demo has 7 in the north warehouse.
 - **Chained tools:** “Is LAMP-42 in stock, and what are the pickup hours at its warehouse?” The model can look up the SKU, then use the returned warehouse ID to find the hours.
@@ -158,6 +175,8 @@ Expand the tool details after each reply to check what happened. Model behavior 
 
 ## Stop the app
 
+For a shortcut-managed session, double-click **Stop Lab.command** to stop both backends. For a manual TypeScript session, press **Control+C** in the API and worker terminals running `make dev-api-ts` and `make dev-worker-ts`.
+
 - If you started the servers yourself, press **Control+C** in each terminal running `make dev-web` and `make dev-api`.
 - If the servers are running in the background, use the command below to find their process IDs. Look for `node` on port 5173 (Vite) and `api` on port 8080 (Go). Run `kill` followed by the two matching PIDs. If a port has no listener, that service is already stopped.
 
@@ -173,9 +192,12 @@ Export these variables in the terminal that starts the corresponding service.
 
 | Variable | Default | Used by |
 | --- | --- | --- |
+| `TS_API_PORT` | `8081` | TypeScript listener |
+| `TS_API_PROXY_TARGET` | `http://127.0.0.1:8081` | Vite TypeScript proxy |
+| `TS_CHAT_TIMEOUT_MS` | `180000` | TypeScript chat request deadline |
 | `API_ADDR` | `127.0.0.1:8080` | Go listener |
-| `OLLAMA_URL` | `http://127.0.0.1:11434` | Go model client |
-| `OLLAMA_MODEL` | `qwen3:14b` | Go model client |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | Go and TypeScript model clients |
+| `OLLAMA_MODEL` | `qwen3:14b` | Go and TypeScript model clients |
 | `DATABASE_URL` | `postgres://lab:lab@127.0.0.1:54329/lab?sslmode=disable&connect_timeout=3` | State-machine checkpoints |
 | `TEMPORAL_ADDR` | `127.0.0.1:7233` | API and Temporal worker |
 | `LOG_LEVEL` | `INFO` | Go process logging threshold |
@@ -190,9 +212,9 @@ In the app, open **API reference** to browse the OpenAPI contract and send a tes
 
 The viewer shows up to 500 recent backend events and 100 browser events from the current tab. The API, MCP child processes, and Temporal worker keep bounded log files in `.lab/logs`. Set `LAB_LOG_DIR` to the same directory for the API and worker if you customize the location.
 
-Each browser request sends an `X-Correlation-ID` header. The Go API accepts IDs containing 16–64 letters, digits, underscores, or hyphens, generates a replacement when needed, and echoes the accepted ID even on error responses. A reply shows its correlation ID under the assistant text. The browser reuses the ID when it resumes a saved turn.
+Each browser request sends an `X-Correlation-ID` header. Both APIs accept IDs containing 16–64 letters, digits, underscores, or hyphens, generates a replacement when needed, and echoes the accepted ID even on error responses. A reply shows its correlation ID under the assistant text. The browser reuses the ID when it resumes a saved turn.
 
-App logs use one JSON object per line, with `time`, `level`, `service`, `component`, `msg`, and `correlation_id` for request-scoped events. Specific events add fields such as `engine`, `tool`, `status`, `duration_ms`, and `workflow_id`. Open the browser’s Developer Tools console for web logs. The Go API, worker, and MCP process write their logs to stderr. The app logs operational metadata and leaves prompts, response text, tool arguments and results out of the logs.
+App logs use one JSON object per line, with `time`, `level`, `service`, `component`, `msg`, and `correlation_id` for request-scoped events. Specific events add fields such as `engine`, `tool`, `status`, `duration_ms`, and `workflow_id`. Open the browser’s Developer Tools console for web logs. The APIs, workers, and MCP processes write application logs to stderr. TypeScript events include `"backend":"typescript"` and a service name such as `api-typescript`, `mcp-typescript`, `temporal-worker-typescript`, or `mcp-worker-typescript`. The app logs operational metadata and leaves prompts, response text, tool arguments and results out of the logs.
 
 For example, start the API and worker in separate terminals. Use `tee` if you want to search both streams after a run.
 
@@ -226,9 +248,12 @@ curl -i -H 'X-Correlation-ID: logging-demo-0001' http://127.0.0.1:8080/api/ready
 
 ## OpenAPI contract
 
-The [OpenAPI 3.1 contract](apps/api/internal/httpapi/contract/openapi.yaml) defines the health, readiness, and chat endpoints. It documents the three engine choices, error responses, tool traces, correlation IDs, and the run IDs used to retry durable turns. With the API running, open [the served specification](http://127.0.0.1:8080/api/openapi.yaml) or use the same path through Vite.
+Both APIs serve the same [OpenAPI 3.1 contract](apps/api/internal/httpapi/contract/openapi.yaml). It covers chat, health, models, MCP discovery, logs, database inspection, and jobs. The **API reference** panel sends its test requests to the selected backend.
 
-Edit `openapi.yaml` first when changing the HTTP contract. Then run `make generate-api` to regenerate the Go routes and transport models in `routes.gen.go`. The handlers enforce conversation rules such as alternating roles and UTF-8 byte limits. `make test` validates the spec and checks live handler responses against its schemas.
+- Go serves the spec at [port 8080](http://127.0.0.1:8080/api/openapi.yaml). Its routes and transport models are generated from the YAML.
+- TypeScript serves the same YAML at [port 8081](http://127.0.0.1:8081/api/openapi.yaml), with a Vite proxy at `/typescript/api/openapi.yaml`. It implements the routes in TypeScript and validates JSON bodies with Zod.
+
+Edit the YAML first when changing the HTTP contract. Run `make generate-api` to refresh the Go bindings, then update the TypeScript handler and validation for any affected contract behavior.
 
 ## Health checks and tests
 
@@ -242,13 +267,14 @@ make test
 make build
 ```
 
-- `GET /api/health` checks the Go process. `GET /api/ready` checks Ollama, the configured model, and MCP tool discovery, returning HTTP 503 when one of those dependencies is unavailable. The state-machine chat request checks PostgreSQL when opening a run.
+- `GET /api/health` checks the selected API process. `GET /api/ready` checks Ollama, the configured model, and MCP tool discovery, returning HTTP 503 when one of those dependencies is unavailable. The state-machine chat request checks PostgreSQL when opening a run.
 - `POST /api/chat` accepts alternating user and assistant messages ending with a user message. Set `"engine":"state-machine"` in the request to use the state machine. Use `"engine":"temporal"` for Temporal. The default is `"engine":"loop"`. The response includes `engine` and `message`, plus a `tools` array when calls were made and a `states` array for the state machine. The request is limited to 512 KiB and 41 messages, with an 8,000-byte limit per user message.
-- `make test` exercises the HTTP contract and a two-step tool call through both engines with simulated Ollama responses and a real in-memory MCP connection. `make build` compiles Go and type-checks and bundles the frontend. Run `npm run preview --workspace apps/web` to serve the built frontend locally on port 4173 with the Go API running.
+- `make test` runs the Go tests and a TypeScript integration test that checks the served spec, a chained tool call through the MCP child, token counts, and correlation IDs with simulated Ollama responses. `make build` compiles Go, type-checks TypeScript, and bundles the frontend. Run `npm run preview --workspace apps/web` to serve the built frontend locally on port 4173 with the Go API running.
 
 ## Repository layout
 
-- `apps/web` contains the chat interface and Vite proxy.
+- `apps/web` contains the shared chat interface and Vite proxies.
+- `apps/api-ts/src` contains the TypeScript API, MCP server, and workflow worker.
 - `apps/api/cmd/api` starts the Go service and wires its dependencies.
 - `apps/api/internal` contains configuration, HTTP handlers, the Ollama adapter, the three orchestration engines, and the inventory MCP server.
 
