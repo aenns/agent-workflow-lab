@@ -11,8 +11,11 @@ try {
   const connection = await NativeConnection.connect({ address: temporalAddress });
   try {
     const service = 'temporal-worker-typescript';
+    const identity = process.env.LAB_WORKER_IDENTITY;
     const worker = await Worker.create({
-      identity: process.env.LAB_WORKER_IDENTITY, connection, taskQueue, workflowsPath: fileURLToPath(new URL('./workflows.ts', import.meta.url)),
+      // The SDK supplies its own identity for a manually launched worker.
+      ...(identity ? { identity } : {}),
+      connection, taskQueue, workflowsPath: fileURLToPath(new URL('./workflows.ts', import.meta.url)),
       activities: {
         ask: (turn: Turn, correlationId: string) =>
           askModel(tools, turn, { service, correlationId }, Context.current().cancellationSignal),
