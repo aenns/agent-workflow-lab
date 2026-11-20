@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // Defines values for AssistantMessageRole.
@@ -81,6 +82,54 @@ const (
 func (e HealthStatus) Valid() bool {
 	switch e {
 	case Ok:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for InventoryWorkflowRunDecision.
+const (
+	Cancel   InventoryWorkflowRunDecision = "cancel"
+	Continue InventoryWorkflowRunDecision = "continue"
+)
+
+// Valid indicates whether the value is a known member of the InventoryWorkflowRunDecision enum.
+func (e InventoryWorkflowRunDecision) Valid() bool {
+	switch e {
+	case Cancel:
+		return true
+	case Continue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for InventoryWorkflowRunStatus.
+const (
+	InventoryWorkflowRunStatusCancelled          InventoryWorkflowRunStatus = "cancelled"
+	InventoryWorkflowRunStatusCompleted          InventoryWorkflowRunStatus = "completed"
+	InventoryWorkflowRunStatusFailed             InventoryWorkflowRunStatus = "failed"
+	InventoryWorkflowRunStatusQueued             InventoryWorkflowRunStatus = "queued"
+	InventoryWorkflowRunStatusRunning            InventoryWorkflowRunStatus = "running"
+	InventoryWorkflowRunStatusWaitingForApproval InventoryWorkflowRunStatus = "waiting-for-approval"
+)
+
+// Valid indicates whether the value is a known member of the InventoryWorkflowRunStatus enum.
+func (e InventoryWorkflowRunStatus) Valid() bool {
+	switch e {
+	case InventoryWorkflowRunStatusCancelled:
+		return true
+	case InventoryWorkflowRunStatusCompleted:
+		return true
+	case InventoryWorkflowRunStatusFailed:
+		return true
+	case InventoryWorkflowRunStatusQueued:
+		return true
+	case InventoryWorkflowRunStatusRunning:
+		return true
+	case InventoryWorkflowRunStatusWaitingForApproval:
 		return true
 	default:
 		return false
@@ -200,6 +249,9 @@ type ChatRequest struct {
 
 	// RunId Optional retry ID for State machine or Temporal. The direct loop ignores this field.
 	RunId *RunIdentifier `json:"runId,omitempty"`
+
+	// Stream Optional incremental response. Supported by all chat engines on every backend. Temporal emits coalesced activity heartbeat previews. Background jobs return complete reports.
+	Stream *bool `json:"stream,omitempty"`
 }
 
 // DatabaseQueryRequest defines model for DatabaseQueryRequest.
@@ -235,6 +287,36 @@ type InstallModelRequest struct {
 	// Model Local Ollama Library model name with an optional tag.
 	Model string `json:"model"`
 }
+
+// InventoryWorkflowDefinition defines model for InventoryWorkflowDefinition.
+type InventoryWorkflowDefinition struct {
+	// Items SKUs are normalized to uppercase and deduplicated by the service.
+	Items           []string `json:"items"`
+	PickupHours     *bool    `json:"pickupHours,omitempty"`
+	RequireApproval *bool    `json:"requireApproval,omitempty"`
+	Summarize       *bool    `json:"summarize,omitempty"`
+}
+
+// InventoryWorkflowRun defines model for InventoryWorkflowRun.
+type InventoryWorkflowRun struct {
+	Decision  *InventoryWorkflowRunDecision `json:"decision,omitempty"`
+	Error     *string                       `json:"error,omitempty"`
+	Id        openapi_types.UUID            `json:"id"`
+	Inventory *[]struct {
+		Result map[string]interface{} `json:"result"`
+		Sku    string                 `json:"sku"`
+	} `json:"inventory,omitempty"`
+	Pickup  *[]map[string]interface{}  `json:"pickup,omitempty"`
+	Status  InventoryWorkflowRunStatus `json:"status"`
+	Steps   *[]string                  `json:"steps,omitempty"`
+	Summary *string                    `json:"summary,omitempty"`
+}
+
+// InventoryWorkflowRunDecision defines model for InventoryWorkflowRun.Decision.
+type InventoryWorkflowRunDecision string
+
+// InventoryWorkflowRunStatus defines model for InventoryWorkflowRun.Status.
+type InventoryWorkflowRunStatus string
 
 // Job defines model for Job.
 type Job struct {

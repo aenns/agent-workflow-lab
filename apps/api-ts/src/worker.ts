@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { Context } from '@temporalio/activity';
+import { activityProgress } from './temporal-progress.ts';
 import { NativeConnection, Worker } from '@temporalio/worker';
 import { askModel, connectTools, runNextTool, type Turn } from './agent.ts';
 import { log } from './logging.ts';
@@ -15,12 +16,19 @@ try {
     const worker = await Worker.create({
       // The SDK supplies its own identity for a manually launched worker.
       ...(identity ? { identity } : {}),
+      maxHeartbeatThrottleInterval: '500ms', defaultHeartbeatThrottleInterval: '500ms',
       connection, taskQueue, workflowsPath: fileURLToPath(new URL('./workflows.ts', import.meta.url)),
       activities: {
-        ask: (turn: Turn, correlationId: string) =>
-          askModel(tools, turn, { service, correlationId }, Context.current().cancellationSignal),
-        callTool: (turn: Turn, correlationId: string) =>
-          runNextTool(tools, turn, { service, correlationId }, Context.current().cancellationSignal),
+        ask: async (turn: Turn, correlationId: string) => {
+          const progress = activityProgress();
+          try { return await askModel(tools, turn, { service, correlationId }, Context.current().cancellationSignal, progress.emit); }
+          finally { progress.close(); }
+        },
+        callTool: async (turn: Turn, correlationId: string) => {
+          const progress = activityProgress();
+          try { return await runNextTool(tools, turn, { service, correlationId }, Context.current().cancellationSignal, progress.emit); }
+          finally { progress.close(); }
+        },
       },
     });
     log({ service, correlationId: '' }, 'worker', 'worker.started', { task_queue: taskQueue });

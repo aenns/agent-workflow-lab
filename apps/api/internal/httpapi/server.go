@@ -130,6 +130,10 @@ func (s server) PostChat(w http.ResponseWriter, r *http.Request, _ contract.Post
 		logger = logger.With("run_id", input.RunID)
 	}
 	logger.Info("chat.started", "message_count", len(input.Messages))
+	if body.Stream != nil && *body.Stream {
+		s.streamChat(w, r.WithContext(ctx), input)
+		return
+	}
 	reply, err := s.service.Reply(ctx, input)
 	if err != nil {
 		logger.Warn("chat.failed", "error_type", fmt.Sprintf("%T", err))

@@ -1,6 +1,7 @@
 """Cross-language integration tests using isolated real PostgreSQL and Temporal."""
 
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -72,7 +73,35 @@ def ollama_stub():
             else:
                 hours = json.loads(results[1]["content"])["pickupHours"]
                 message = {"role": "assistant", "content": f"7 lamps at {warehouse}. {hours}"}
-            self.respond(200, {"message": message, "prompt_eval_count": 12, "eval_count": 4})
+            if payload.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.end_headers()
+                # Send separate records, including a UTF-8 character, to exercise
+                # adapters instead of disguising a complete JSON reply as a stream.
+                chunks = [{"message": message, "done": False}]
+                if not message.get("tool_calls"):
+                    content = message["content"] + " Café"
+                    chunks = [{"message": {"role": "assistant", "content": part}, "done": False}
+                              for part in [content[:7], content[7:]]]
+                chunks.append({"message": {"role": "assistant", "content": ""}, "done": True,
+                               "prompt_eval_count": 12, "eval_count": 4})
+                if correlation.startswith("temporal-stream-") and not message.get("tool_calls"):
+                    content = message["content"] + " Café — a streamed Temporal response."
+                    chunks = [{"message": {"role": "assistant", "content": character}, "done": False}
+                              for character in content]
+                    chunks.append({"message": {"role": "assistant", "content": ""}, "done": True,
+                                   "prompt_eval_count": 12, "eval_count": 4})
+                try:
+                    for chunk in chunks:
+                        self.wfile.write((json.dumps(chunk, ensure_ascii=False) + "\n").encode())
+                        self.wfile.flush()
+                        if correlation.startswith("temporal-stream-"):
+                            time.sleep(0.08)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # A worker killed during the restart test closes Ollama.
+            else:
+                self.respond(200, {"message": message, "prompt_eval_count": 12, "eval_count": 4})
 
         def assert_path(self):
             if self.path != "/api/chat":
@@ -120,7 +149,7 @@ def services(directory):
         return subprocess.check_output([*compose, "port", service, str(target)], text=True, timeout=10).strip()
 
     try:
-        subprocess.run([*compose, "up", "-d", "--wait", "--wait-timeout", "90"], check=True, timeout=180)
+        subprocess.run([*compose, "up", "-d", "--wait", "--wait-timeout", "90", "postgres", "temporal"], check=True, timeout=180)
         yield f"postgres://lab:lab@{port('postgres', 5432)}/lab?sslmode=disable", port("temporal", 7233)
     finally:
         subprocess.run([*compose, "down", "-v"], check=True, timeout=60)
@@ -164,13 +193,17 @@ class BackendIntegration(unittest.TestCase):
                     ("python", ROOT / "apps/api-py", [".venv/bin/python", "-m", "workflow_lab.server"],
                      [".venv/bin/python", "-m", "workflow_lab.worker"], "lab-py-job-"),
                 ]
+                java_dir = ROOT / "apps/api-java"
+                if (java_dir / "target/classes/lab/Main.class").is_file():
+                    java = ["java", "-cp", "target/classes:target/dependency/*", "lab.Main"]
+                    backends.append(("java", java_dir, [*java, "api"], [*java, "temporal-worker"], "lab-java-job-"))
                 for name, cwd, api, worker, prefix in backends:
                     with self.subTest(backend=name):
                         print(f"Testing {name} checkpoint recovery and queued jobs", flush=True)
                         port = free_port()
                         env = {**os.environ, "DATABASE_URL": database, "TEMPORAL_ADDR": temporal,
                                "OLLAMA_URL": ollama, "OLLAMA_MODEL": "test-model:latest",
-                               "API_ADDR": f"127.0.0.1:{port}", "TS_API_PORT": str(port), "PY_API_PORT": str(port),
+                               "API_ADDR": f"127.0.0.1:{port}", "TS_API_PORT": str(port), "PY_API_PORT": str(port), "JAVA_API_PORT": str(port),
                                "LAB_LOG_DIR": str(directory / name)}
                         log = directory / f"{name}.log"
                         try:
@@ -218,6 +251,9 @@ class BackendIntegration(unittest.TestCase):
             self.assertEqual(status, 200, inspected)
             self.assertEqual(len(inspected["rows"]), 3)
 
+            self.exercise_streams(base, calls, failure)
+            self.exercise_temporal_stream(base, cwd, worker, env, log, calls)
+
             submission = {"prompt": PROMPT, "key": job_key}
             status, headers, queued = request(base, "/api/jobs", submission, job_id)
             self.assertEqual(status, 202, queued)
@@ -251,6 +287,99 @@ class BackendIntegration(unittest.TestCase):
                 self.assertTrue(any(entry["service"].startswith("api") for entry in scoped), scoped)
                 self.assertTrue(any(entry["service"].startswith("temporal-worker") for entry in scoped), scoped)
                 self.assertTrue(any(entry["service"].startswith("mcp") for entry in scoped), scoped)
+
+    def stream(self, base, body, correlation, notify=None):
+        req = Request(base + "/api/chat", data=json.dumps(body).encode(), headers={
+            "Content-Type": "application/json", "X-Correlation-ID": correlation,
+        })
+        with urlopen(req, timeout=25) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("application/x-ndjson", response.headers["Content-Type"])
+            self.assertEqual(response.headers["X-Correlation-ID"], correlation)
+            events = []
+            for line in response:
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                events.append(event)
+                if notify:
+                    notify(event)
+            return events
+
+    def exercise_streams(self, base, calls, failure):
+        for engine in ["loop", "state-machine"]:
+            correlation = str(uuid4())
+            body = {"stream": True, "engine": engine, "runId": correlation,
+                    "messages": [{"role": "user", "content": PROMPT}]}
+            events = self.stream(base, body, correlation)
+            self.assertEqual(events[-1]["type"], "complete", events)
+            reply = events[-1]["reply"]
+            self.assert_reply(reply)
+            self.assertEqual([event["name"] for event in events if event["type"] == "tool-start"], TOOLS)
+            self.assertEqual([event["name"] for event in events if event["type"] == "tool-complete"], TOOLS)
+            self.assertEqual(sum(event["type"] == "model-start" for event in events), 3)
+            self.assertEqual("".join(event["text"] for event in events if event["type"] == "text"),
+                             reply["message"]["content"])
+            self.assertIn("Café", reply["message"]["content"])
+            self.assertEqual([len(results) for cid, results in calls if cid == correlation], [0, 1, 2])
+            if engine == "state-machine":
+                cached = self.stream(base, body, correlation)
+                self.assertEqual([event["type"] for event in cached], ["complete"])
+                self.assertEqual(cached[0]["reply"], reply)
+                # Failure after inventory checkpoints must send a terminal error,
+                # then resume without executing the completed inventory tool again.
+                correlation = str(uuid4())
+                body["runId"] = correlation
+                failure.add(correlation)
+                failed = self.stream(base, body, correlation)
+                self.assertEqual(failed[-1]["type"], "error", failed)
+                self.assertFalse(any(event["type"] == "complete" for event in failed))
+                recovered = self.stream(base, body, correlation)
+                self.assertEqual(recovered[-1]["type"], "complete", recovered)
+                self.assert_reply(recovered[-1]["reply"])
+                self.assertEqual([event["name"] for event in recovered if event["type"] == "tool-start"], [TOOLS[1]])
+                self.assertEqual([len(results) for cid, results in calls if cid == correlation], [0, 1, 1, 2])
+        status, _, _ = request(base, "/api/chat", {
+            "engine": "temporal", "stream": "true", "messages": [{"role": "user", "content": PROMPT}],
+        })
+        self.assertEqual(status, 400)
+
+    def exercise_temporal_stream(self, base, cwd, worker, env, log, calls):
+        correlation = "temporal-stream-" + str(uuid4())
+        body = {"stream": True, "engine": "temporal", "runId": correlation,
+                "messages": [{"role": "user", "content": PROMPT}]}
+        # Closing the first browser connection must leave the accepted workflow
+        # queued. A second connection with the same ID attaches to that run.
+        req = Request(base + "/api/chat", data=json.dumps(body).encode(), headers={
+            "Content-Type": "application/json", "X-Correlation-ID": correlation,
+        })
+        with urlopen(req, timeout=25) as response:
+            self.assertEqual(json.loads(response.readline())["type"], "status")
+        observed = []
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.stream, base, body, correlation, observed.append)
+            eventually(lambda: bool(observed))
+            self.assertFalse(future.done())
+            self.assertFalse(any(cid == correlation for cid, _ in calls))
+            with process(worker, cwd, env, log) as worker_child:
+                eventually(lambda: any(event["type"] == "model-snapshot" and event["text"] for event in observed), 30)
+                # Hard failure after visible text forces retry of just the
+                # unfinished model activity, using its existing activity ID.
+                os.killpg(worker_child.pid, signal.SIGKILL)
+            self.assertFalse(future.done(), "workflow finished before the worker interruption")
+            with process(worker, cwd, env, log):
+                events = future.result(timeout=45)
+        self.assertEqual(events[-1]["type"], "complete", events)
+        self.assert_reply(events[-1]["reply"])
+        previews = [event for event in events if event["type"] == "model-snapshot" and event["text"]]
+        self.assertTrue(any(event["attempt"] == 1 for event in previews), previews)
+        self.assertTrue(any(event["attempt"] > 1 for event in previews), previews)
+        # Completed inventory/hours activities do not repeat after model retry.
+        self.assertEqual([len(results) for cid, results in calls if cid == correlation], [0, 1, 2, 2])
+        cached = self.stream(base, body, correlation)
+        self.assertEqual(cached[-1]["type"], "complete")
+        self.assertEqual(cached[-1]["reply"], events[-1]["reply"])
+        self.assertFalse(any(event["type"] == "model-snapshot" for event in cached))
 
     def assert_reply(self, reply):
         self.assertEqual([tool["name"] for tool in reply["tools"]], TOOLS)

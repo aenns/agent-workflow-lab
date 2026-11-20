@@ -127,6 +127,9 @@ type Message struct {
 // Ollama returns either a final text message or a structured list of tool
 // calls. This client decodes those responses. The engine decides what runs.
 func (c Client) Complete(ctx context.Context, messages []Message, tools []Tool) (Message, error) {
+	if chat.Streaming(ctx) {
+		return c.completeStream(ctx, messages, tools)
+	}
 	payload, err := json.Marshal(struct {
 		Model    string    `json:"model"`
 		Messages []Message `json:"messages"`

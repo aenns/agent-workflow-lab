@@ -43,7 +43,7 @@ async def open_checkpoints():
         yield connection, saver
 
 
-async def run_graph(agent, model, messages, correlation_id, run_id=None):
+async def run_graph(agent, model, messages, correlation_id, run_id=None, emit=None):
     run_id = run_id or str(uuid4())
     if run_id in running:
         raise APIError(409, "This run is already in progress.")
@@ -51,11 +51,11 @@ async def run_graph(agent, model, messages, correlation_id, run_id=None):
     try:
         async with open_checkpoints() as (_, saver):
             async def ask(state):
-                return {"turn": await agent.ask(state["turn"], correlation_id),
+                return {"turn": await agent.ask(state["turn"], correlation_id, emit),
                         "states": [*state["states"], "Ask model"]}
 
             async def tool(state):
-                return {"turn": await agent.call_next(state["turn"], correlation_id),
+                return {"turn": await agent.call_next(state["turn"], correlation_id, emit),
                         "states": [*state["states"], "Run tools"]}
 
             def next_tool_or(state, fallback):

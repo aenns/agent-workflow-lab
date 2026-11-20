@@ -13,6 +13,7 @@ SOURCES = (
     "api", "api-mcp", "temporal-worker", "worker-mcp",
     "api-typescript", "mcp-typescript", "mcp-worker-typescript", "temporal-worker-typescript",
     "api-python", "mcp-python", "mcp-worker-python", "temporal-worker-python",
+    "api-java", "mcp-java", "temporal-worker-java", "mcp-worker-java", "restate-java", "mcp-restate-java",
 )
 
 

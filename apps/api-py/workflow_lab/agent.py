@@ -81,19 +81,24 @@ class Agent:
             if item.get("name") and (not item.get("capabilities") or "tools" in item["capabilities"])
         })
 
-    async def ask(self, turn, correlation_id):
+    async def ask(self, turn, correlation_id, emit=None):
         final = turn["rounds"] >= 4 or len(turn["tools"]) >= 8
         tools = [] if final else await self.list_tools(correlation_id)
         try:
-            response = await self.ollama("POST", "/api/chat", correlation_id, json={
+            body = {
                 "model": turn["model"], "messages": turn["transcript"],
                 "tools": [{"type": "function", "function": {
                     "name": tool.name, "description": tool.description, "parameters": tool.inputSchema,
                 }} for tool in tools],
-                "stream": False, "think": False,
-            })
-            response.raise_for_status()
-            payload = response.json()
+                "stream": emit is not None, "think": False,
+            }
+            if emit:
+                await emit({"type": "model-start"})
+                payload = await self.stream_model(body, correlation_id, emit)
+            else:
+                response = await self.ollama("POST", "/api/chat", correlation_id, json=body)
+                response.raise_for_status()
+                payload = response.json()
             message = payload["message"]
             if message.get("role") != "assistant" or not isinstance(message.get("content"), str):
                 raise ValueError("invalid assistant response")
@@ -109,11 +114,40 @@ class Agent:
         return {**turn, "transcript": [*turn["transcript"], assistant], "pending": calls,
                 "usage": [*turn["usage"], counts], "rounds": turn["rounds"] + bool(calls)}
 
-    async def call_next(self, turn, correlation_id):
+    async def stream_model(self, body, correlation_id, emit):
+        # Keep HTTP resources scoped to this request so cancellation closes Ollama.
+        started = monotonic()
+        message = {"role": "assistant", "content": "", "tool_calls": []}
+        async with self.http.stream("POST", OLLAMA + "/api/chat", json=body,
+                                    headers={"X-Correlation-ID": correlation_id}) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                if len(line) > 2 * 1024 * 1024:
+                    raise ValueError("Streaming record exceeded the size limit.")
+                chunk = json.loads(line)
+                if chunk.get("error"):
+                    raise ValueError("Ollama stream failed.")
+                part = chunk.get("message") or {}
+                if part.get("content"):
+                    message["content"] += part["content"]
+                    await emit({"type": "text", "text": part["content"]})
+                message["tool_calls"].extend(part.get("tool_calls") or [])
+                if chunk.get("done"):
+                    log(self.service, correlation_id, "ollama-client", "ollama.request.completed",
+                        route="/api/chat", model=body["model"], status=response.status_code, stream=True,
+                        duration_ms=int((monotonic() - started) * 1000))
+                    return {**chunk, "message": message}
+        raise ValueError("Ollama stream ended before completion.")
+
+    async def call_next(self, turn, correlation_id, emit=None):
         # Execute one call per durable step, including when Ollama requests a batch.
         call, *pending = turn["pending"]
         function = call.get("function") or {}
         name, args = function.get("name", ""), function.get("arguments")
+        if emit:
+            await emit({"type": "tool-start", "name": name})
         started = monotonic()
         try:
             if not isinstance(args, dict):
@@ -131,18 +165,20 @@ class Agent:
         duration = int((monotonic() - started) * 1000)
         log(self.service, correlation_id, "mcp-client", "mcp.call.completed", tool=name,
             tool_error=failed, duration_ms=duration)
+        if emit:
+            await emit({"type": "tool-complete", "name": name})
         event = {"name": name, "arguments": args, "result": output, "isError": failed, "durationMs": duration}
         return {**turn, "pending": pending, "tools": [*turn["tools"], event],
                 "transcript": [*turn["transcript"], {"role": "tool", "tool_name": name, "content": output}]}
 
-    async def loop(self, model, messages, correlation_id):
+    async def loop(self, model, messages, correlation_id, emit=None):
         turn = new_turn(model, messages)
         while True:
-            turn = await self.ask(turn, correlation_id)
+            turn = await self.ask(turn, correlation_id, emit)
             if not turn["pending"]:
                 return reply(turn, "loop")
             while turn["pending"]:
-                turn = await self.call_next(turn, correlation_id)
+                turn = await self.call_next(turn, correlation_id, emit)
 
 
 @asynccontextmanager

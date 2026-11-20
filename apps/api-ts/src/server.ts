@@ -1,3 +1,5 @@
+import { once } from 'node:events';
+import type { Emit } from '../../../packages/chat-stream.ts';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -20,6 +22,7 @@ const chatSchema = z.object({
       messages.every(({ role, content }, index) => role === (index % 2 ? 'assistant' : 'user') &&
         (role === 'assistant' || Buffer.byteLength(content) <= 8000))),
   model: modelTag,
+  stream: z.boolean().default(false),
   engine: z.enum(['loop', 'state-machine', 'temporal']).default('loop'),
   runId: id.optional(),
 });
@@ -128,11 +131,32 @@ const server = createServer(async (request, response) => {
         const input = { ...body, runId, model: await chooseModel(body.model), correlationId };
         const signal = timeout(chatTimeout);
         log(trace, 'chat', 'chat.started', { engine: body.engine, model: input.model });
+        let emit: Emit | undefined;
+        if (body.stream) {
+          response.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+          response.flushHeaders();
+          emit = async (event) => {
+            signal.throwIfAborted();
+            if (!response.write(JSON.stringify(event) + '\n')) await once(response, 'drain', { signal });
+          };
+        }
         try {
-          const result = body.engine === 'state-machine' ? await runGraph(tools, input, trace, signal) :
-            body.engine === 'temporal' ? await temporalChat(input, signal) : await runLoop(tools, input, trace, signal);
+          const result = body.engine === 'state-machine' ? await runGraph(tools, input, trace, signal, emit) :
+            body.engine === 'temporal' ? await temporalChat(input, signal, emit) : await runLoop(tools, input, trace, signal, emit);
+          if (emit) {
+            await emit({ type: 'complete', reply: result });
+            response.end();
+            return;
+          }
           return send(response, result);
         } catch (error) {
+          if (emit) {
+            if (!response.destroyed) response.end(JSON.stringify({ type: 'error',
+              error: signal.aborted ? 'The chat request timed out or disconnected.' :
+                error instanceof HttpError ? error.message : 'The streaming request failed. Try again.',
+            }) + '\n');
+            return;
+          }
           if (signal.aborted && !connection.signal.aborted) throw new HttpError(504, 'The chat request timed out.');
           throw error;
         }

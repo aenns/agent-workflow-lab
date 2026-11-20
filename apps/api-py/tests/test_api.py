@@ -21,6 +21,13 @@ def mock_ollama():
     calls = []
 
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            response = json.dumps({"models": [{"name": "qwen3:14b"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             calls.append((self.headers.get("X-Correlation-ID"), body))
@@ -37,12 +44,19 @@ def mock_ollama():
                 ("warehouse_hours", {"warehouse": "north"}),
             ]
             message = {"role": "assistant", "content": "Seven lamps at the north warehouse."}
-            index = len(calls) - 1
+            index = sum(message["role"] == "tool" for message in body["messages"])
             if index < len(steps):
                 name, arguments = steps[index]
                 message = {"role": "assistant", "content": "",
                            "tool_calls": [{"function": {"name": name, "arguments": arguments}}]}
-            response = json.dumps({"message": message, "prompt_eval_count": 10, "eval_count": 2}).encode()
+            if body.get("stream"):
+                chunks = [{"message": message, "done": False}]
+                if not any(message["content"] == "broken-stream" for message in body["messages"]):
+                    chunks.append({"message": {"role": "assistant", "content": ""}, "done": True,
+                                   "prompt_eval_count": 10, "eval_count": 2})
+                response = "".join(json.dumps(chunk) + "\n" for chunk in chunks).encode()
+            else:
+                response = json.dumps({"message": message, "prompt_eval_count": 10, "eval_count": 2}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(response)))
@@ -68,6 +82,7 @@ class PythonBackendTest(unittest.TestCase):
             with patch("workflow_lab.agent.OLLAMA", url), patch("workflow_lab.telemetry.DIRECTORY", Path(directory)):
                 with patch.dict("os.environ", {"LAB_LOG_DIR": directory}), TestClient(app) as client:
                     self.assertEqual(client.get("/api/openapi.yaml").content, CONTRACT.read_bytes())
+                    self.assertEqual(client.get("/api/ready").status_code, 200)
                     response = client.post("/api/chat", headers={"X-Correlation-ID": CORRELATION_ID},
                                            json={"messages": [{"role": "user", "content": "Stock and pickup hours?"}]})
                     self.assertEqual(response.status_code, 200, response.text)
@@ -104,3 +119,33 @@ class PythonBackendTest(unittest.TestCase):
                             self.assertEqual([json.loads(line)["status"] for line in response.iter_lines()],
                                              ["downloading", "success"])
                     self.assertEqual(calls, [(CORRELATION_ID, {"model": "qwen3:14b", "stream": True})])
+
+
+    def test_chat_stream_and_incomplete_response(self):
+        with mock_ollama() as (url, calls), tempfile.TemporaryDirectory() as directory:
+            with patch("workflow_lab.agent.OLLAMA", url), patch("workflow_lab.telemetry.DIRECTORY", Path(directory)):
+                with patch.dict("os.environ", {"LAB_LOG_DIR": directory}), TestClient(app) as client:
+                    response = client.post("/api/chat", headers={"X-Correlation-ID": CORRELATION_ID}, json={
+                        "stream": True, "messages": [{"role": "user", "content": "Stock and hours?"}],
+                    })
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn("application/x-ndjson", response.headers["Content-Type"])
+                    self.assertEqual(response.headers["X-Correlation-ID"], CORRELATION_ID)
+                    events = [json.loads(line) for line in response.iter_lines()]
+                    self.assertEqual(events[-1]["type"], "complete")
+                    self.assertEqual([event["name"] for event in events if event["type"] == "tool-start"],
+                                     ["lookup_inventory", "warehouse_hours"])
+                    self.assertEqual(sum(event["type"] == "tool-complete" for event in events), 2)
+                    self.assertEqual(events[-1]["reply"]["usage"], [{"inputTokens": 10, "outputTokens": 2}] * 3)
+                    self.assertEqual("".join(event["text"] for event in events if event["type"] == "text"),
+                                     events[-1]["reply"]["message"]["content"])
+                    response = client.post("/api/chat", json={
+                        "stream": True, "messages": [{"role": "user", "content": "broken-stream"}],
+                    })
+                    events = [json.loads(line) for line in response.iter_lines()]
+                    self.assertEqual(events[-1]["type"], "error")
+                    self.assertFalse(any(event["type"] == "complete" for event in events))
+                    response = client.post("/api/chat", json={
+                        "stream": "true", "engine": "temporal", "messages": [{"role": "user", "content": "Hello"}],
+                    })
+                    self.assertEqual(response.status_code, 400)

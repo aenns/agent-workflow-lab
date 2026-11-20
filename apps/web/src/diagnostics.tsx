@@ -9,6 +9,7 @@ type Operation = {
   path: string;
   summary: string;
   description?: string;
+  'x-backends'?: Backend[];
   responses: Record<string, { description?: string }>;
   parameters?: { name?: string; in?: string; required?: boolean }[];
   requestBody?: { content: { 'application/json'?: { example?: unknown } } };
@@ -49,7 +50,7 @@ async function openAPI(response: Response): Promise<Operation[]> {
       .filter(([method]) => methods.has(method))
       .map(([method, operation]) => ({ ...operation, path, method: method.toUpperCase() })),
   ).sort((a, b) => {
-    const order = ['/api/chat', '/api/health', '/api/ready', '/api/models', '/api/models/search', '/api/models/install', '/api/tools', '/api/database/queries', '/api/database/query', '/api/jobs', '/api/jobs/{jobId}', '/api/logs', '/api/openapi.yaml'];
+    const order = ['/api/chat', '/api/health', '/api/ready', '/api/models', '/api/models/search', '/api/models/install', '/api/tools', '/api/database/queries', '/api/database/query', '/api/jobs', '/api/jobs/{jobId}', '/api/workflows', '/api/workflows/{workflowId}', '/api/workflows/{workflowId}/decision', '/api/logs', '/api/openapi.yaml'];
     return order.indexOf(a.path) - order.indexOf(b.path);
   });
 }
@@ -136,7 +137,7 @@ export function APIReference({ backend }: { backend: Backend }) {
     </div>
     {error && <p className="panel-status error" role="alert">{error} <button onClick={refresh}>Retry</button></p>}
     {!data && !error && <p className="panel-status" role="status">Loading API contract…</p>}
-    {data?.map((operation) => <Endpoint key={operation.path + operation.method} backend={backend} operation={operation} />)}
+    {data?.filter((operation) => !operation['x-backends'] || operation['x-backends'].includes(backend)).map((operation) => <Endpoint key={operation.path + operation.method} backend={backend} operation={operation} />)}
   </section>;
 }
 

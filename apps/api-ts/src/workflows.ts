@@ -4,7 +4,7 @@ import type { RunInput, Turn } from './agent.ts';
 const activities = proxyActivities<{
   ask(turn: Turn, correlationId: string): Promise<Turn>;
   callTool(turn: Turn, correlationId: string): Promise<Turn>;
-}>({ startToCloseTimeout: '3 minutes', retry: { maximumAttempts: 3 } });
+}>({ startToCloseTimeout: '3 minutes', heartbeatTimeout: '10 seconds', retry: { maximumAttempts: 3 } });
 
 export async function inventoryTypescript(turn: Turn, input: RunInput) {
   // The workflow only schedules activities. Network and MCP calls run in the worker.

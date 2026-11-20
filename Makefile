@@ -64,3 +64,30 @@ dev-api-py:
 
 dev-worker-py:
 	cd $(PY_API) && .venv/bin/python -m workflow_lab.worker
+
+JAVA_API = apps/api-java
+JAVA_CP = target/classes:target/dependency/*
+MVN_ARGS ?=
+RESTATE_DEPLOYMENT_URL ?= http://host.docker.internal:9080
+
+.PHONY: build-java dev-api-java dev-worker-java dev-restate-service start-restate register-restate stop-restate
+build-java:
+	cd $(JAVA_API) && ./mvnw $(MVN_ARGS) package
+
+dev-api-java:
+	cd $(JAVA_API) && java -cp "$(JAVA_CP)" lab.Main api
+
+dev-worker-java:
+	cd $(JAVA_API) && java -cp "$(JAVA_CP)" lab.Main temporal-worker
+
+dev-restate-service:
+	cd $(JAVA_API) && java -cp "$(JAVA_CP)" lab.Main restate
+
+start-restate:
+	docker compose up -d restate
+
+register-restate:
+	@node apps/api-java/register-restate.mjs "$(RESTATE_DEPLOYMENT_URL)"
+
+stop-restate:
+	docker compose stop restate

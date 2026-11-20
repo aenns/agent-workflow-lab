@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from .agent import APIError, MODEL, open_agent
+from .streaming import chat_stream
 from .graph import inspect_checkpoints, queries, run_graph
 from .library import install, search
 from .telemetry import ROOT, log, recent_logs
@@ -35,7 +36,7 @@ async def lifespan(app):
         yield
 
 
-# All three backends serve the same contract file used to generate the Go routes.
+# All four backends serve the same contract, including labeled Java-only extensions.
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -78,6 +79,7 @@ class Message(BaseModel):
 class Chat(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=41)
     engine: Literal["loop", "state-machine", "temporal"] = "loop"
+    stream: bool = Field(default=False, strict=True)
     runId: str | None = Field(default=None, pattern=ID)
     model: str | None = Field(default=None, max_length=255)
 
@@ -203,14 +205,18 @@ async def chat(request: Request):
     headers = {"X-Run-ID": run_id} if run_id else {}
     model = await choose_model(request, body.model)
     log(SERVICE, correlation, "chat", "chat.started", engine=body.engine, model=model)
-    try:
+    async def run(emit=None):
         async with asyncio.timeout(CHAT_TIMEOUT):
             if body.engine == "state-machine":
-                result = await run_graph(agent, model, messages, correlation, run_id)
-            elif body.engine == "temporal":
-                result = await temporal_chat(model, messages, correlation, run_id)
-            else:
-                result = await agent.loop(model, messages, correlation)
+                return await run_graph(agent, model, messages, correlation, run_id, emit)
+            if body.engine == "temporal":
+                return await temporal_chat(model, messages, correlation, run_id, emit)
+            return await agent.loop(model, messages, correlation, emit)
+
+    if body.stream:
+        return chat_stream(run, headers, correlation)
+    try:
+        result = await run()
     except TimeoutError:
         return JSONResponse({"error": "The chat request timed out."}, status_code=504, headers=headers)
     except APIError as error:

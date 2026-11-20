@@ -5,3 +5,5 @@ generate:
   models: true
 output-options:
   skip-prune: true
+  # Restate workflows are Java-only extensions in the shared reference.
+  exclude-tags: [Java workflows]

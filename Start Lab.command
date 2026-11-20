@@ -72,6 +72,7 @@ supervise_workers() {
     fi
   done
 }
+compose_services=(postgres temporal)
 compose_started=false
 cleanup() {
   trap '' INT TERM HUP
@@ -82,8 +83,8 @@ cleanup() {
     if [[ -n "$pid" ]]; then wait "$pid" 2>/dev/null || true; fi
   done
   if "$compose_started"; then
-    if ! docker compose stop postgres temporal; then
-      printf '%s\n' 'Could not stop the containers. Run make stop-db stop-temporal once Docker is ready.'
+    if ! docker compose stop "${compose_services[@]}"; then
+      printf '%s\n' 'Could not stop the containers. Check Docker Desktop and run make stop-db stop-temporal stop-restate.'
     fi
   fi
   rm -f "$state/stop" "$state"/worker-*
@@ -140,8 +141,39 @@ if ! apps/api-py/.venv/bin/python -c 'import mcp, temporalio, langgraph.checkpoi
   make install-py
 fi
 check_stop
+java_enabled=false
+restate_enabled=false
+if [[ "${LAB_ENABLE_JAVA:-1}" == 1 ]]; then
+  # Finder may omit Homebrew's versioned JDK from PATH.
+  if ! java -version >/dev/null 2>&1 && [[ -x /opt/homebrew/opt/openjdk@17/bin/java ]]; then
+    export PATH="/opt/homebrew/opt/openjdk@17/bin:$PATH"
+  fi
+  if java -version >/dev/null 2>&1; then
+    if /usr/sbin/lsof -nP -iTCP:"${JAVA_API_PORT:-8083}" -sTCP:LISTEN >/dev/null 2>&1; then
+      printf '%s\n' 'The Java API port is in use. Stop the existing Java API before starting the lab.' >&2
+      exit 1
+    fi
+    make build-java
+    java_enabled=true
+    worker_backends+=(java)
+    worker_targets+=(dev-worker-java)
+    worker_pids+=("")
+    worker_generations+=(0)
+    worker_stopping+=(false)
+    touch "$state/worker-java.managed"
+    if [[ "${LAB_ENABLE_RESTATE:-1}" == 1 ]]; then
+      if /usr/sbin/lsof -nP -iTCP:"${RESTATE_SERVICE_PORT:-9080}" -sTCP:LISTEN >/dev/null 2>&1; then
+        printf '%s\n' 'The Restate Java service port is in use. Stop the manually launched service before using this shortcut.' >&2
+        exit 1
+      fi
+      restate_enabled=true
+      compose_services+=(restate)
+    fi
+  fi
+fi
+check_stop
 compose_started=true
-docker compose up -d --wait --wait-timeout 90 postgres temporal
+docker compose up -d --wait --wait-timeout 90 "${compose_services[@]}"
 check_stop
 
 make dev-api &
@@ -150,6 +182,15 @@ make dev-api-ts &
 children+=("$!")
 make dev-api-py &
 children+=("$!")
+if "$java_enabled"; then
+  make dev-api-java &
+  children+=("$!")
+fi
+if "$restate_enabled"; then
+  make dev-restate-service &
+  children+=("$!")
+  wait_for 'Restate service registration' 45 make register-restate
+fi
 for backend in "${worker_backends[@]}"; do
   touch "$state/worker-$backend.run"
 done
@@ -162,6 +203,9 @@ wait_for 'the web app' 60 curl -fsS --max-time 2 "$web_url/"
 wait_for 'the Go API through the web app' 60 curl -fsS --max-time 2 "$web_url/api/health"
 wait_for 'the TypeScript API through the web app' 60 curl -fsS --max-time 2 "$web_url/typescript/api/health"
 wait_for 'the Python API through the web app' 60 curl -fsS --max-time 2 "$web_url/python/api/health"
+if "$java_enabled"; then
+  wait_for 'the Java API through the web app' 60 curl -fsS --max-time 2 "$web_url/java/api/health"
+fi
 if ! /usr/bin/open -b com.google.Chrome "$web_url/"; then
   printf 'Could not open Chrome automatically. Open %s/ in Chrome.\n' "$web_url" >&2
 fi

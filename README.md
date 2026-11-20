@@ -1,6 +1,6 @@
 # Local AI Agent & MCP Workflow Lab
 
-The lab compares three ways to run the same AI chat turn in Go, TypeScript, and Python. The direct loop runs in memory, LangGraph saves checkpoints to PostgreSQL, and Temporal durably schedules work for a separate worker. All three backends use the same React app and local Ollama instance. Each has its own MCP inventory server with the same demo tools.
+The lab compares three ways to run the same AI chat turn in Go, TypeScript, Python, and Java. The direct loop runs in memory, LangGraph saves checkpoints to PostgreSQL, and Temporal durably schedules work for a separate worker. All four backends use the same React app and local Ollama instance. Each has its own MCP inventory server with the same demo tools.
 
 ## Demo walkthrough
 
@@ -8,7 +8,7 @@ Use the [quick start](#quick-start) to send an inventory question and inspect th
 
 ## macOS shortcuts
 
-In Finder, open the project folder and double-click **Start Lab.command**. It opens Docker Desktop and Ollama if needed, starts PostgreSQL, Temporal, the Go, TypeScript, and Python APIs and workers, and the web app, then opens the lab in Chrome. Install the prerequisites below and Python 3.12, then pull the model once before using the shortcut. Leave the launcher Terminal window open while the lab runs.
+In Finder, open the project folder and double-click **Start Lab.command**. It opens Docker Desktop and Ollama if needed, starts PostgreSQL, Temporal, the Go, TypeScript, and Python APIs and workers, and the web app, then opens the lab in Chrome. Install the prerequisites below and Python 3.12, then pull the model once before using the shortcut. With JDK 17 or newer available, the launcher also builds Java and starts its API, Temporal worker, and Restate demo. The first Java build downloads Maven and its dependencies. Set `LAB_ENABLE_JAVA=0` when running the launcher from Terminal to skip Java. Set `LAB_ENABLE_RESTATE=0` to start Java without Restate. Leave the launcher Terminal window open while the lab runs.
 
 Double-click **Stop Lab.command** or press **Control+C** in the launcher Terminal window to stop the lab processes and containers. Checkpoints and workflow history are retained. Chrome, Docker Desktop, and Ollama stay open because other apps may use them. If you started the API or web app manually, stop those terminals before using the shortcuts.
 
@@ -40,7 +40,7 @@ Run `make install`, then run `make dev-api-ts` and `make dev-web` in separate te
 - For **State machine**, start PostgreSQL with `make dev-db`. LangGraph checkpoints use the `workflow_lab_typescript` schema. The **Database** panel reads the selected backend's checkpoints.
 - For **Temporal** and **Run in background**, run `make dev-temporal` and `make dev-worker-ts`. The TypeScript worker polls its own task queue. To verify recovery, submit a background audit with that worker stopped and restart it to complete the same job.
 - Open **View logs** on a reply or job to filter by its correlation ID. TypeScript JSON records include `"backend":"typescript"` and identify the API, worker, or MCP server in the `service` field.
-- Set `TS_API_PORT` to change the TypeScript listener and `TS_API_PROXY_TARGET` to match it in Vite. `TS_CHAT_TIMEOUT_MS` overrides the default three-minute wait for chat. All three implementations serve the same OpenAPI document.
+- Set `TS_API_PORT` to change the TypeScript listener and `TS_API_PROXY_TARGET` to match it in Vite. `TS_CHAT_TIMEOUT_MS` overrides the default three-minute wait for chat. All four implementations serve the same OpenAPI document.
 
 To compare the implementations, keep the APIs you want to compare running and change **Backend** in the header. The API reference, MCP tools, jobs, and database follow that selection. A saved run belongs to the backend that created it.
 
@@ -52,6 +52,37 @@ Run `make install install-py` with Python 3.12 available. Run `make dev-api-py` 
 - For **Temporal** and **Run in background**, run `make dev-temporal` and `make dev-worker-py`. The worker uses the separate `workflow-lab-python` task queue. Submit an audit while the worker is offline, then start it to see the same job finish.
 - **View logs** filters events by correlation ID. Python events include `"backend":"python"` and the API, MCP, or Temporal worker service name.
 - To choose a specific Python executable for setup, run `make install-py PYTHON=python3.12`. The launcher and manual commands use the resulting virtual environment.
+
+## Run the Java backend
+
+Install JDK 17 or newer and run `make build-java`. The checked-in Maven wrapper selects the Maven version and runs Java tests during packaging. With Ollama running, run `make dev-api-java` and `make dev-web` in separate terminals, then select **Backend → Java**. The Java API listens on port 8083 and launches a Java MCP server over stdio.
+
+- **Java loop** only needs Ollama and the API.
+- **State machine** uses LangGraph4j and the `workflow_lab_java` PostgreSQL schema. Run `make dev-db` and use **Database** to inspect a Java run.
+- **Temporal** uses the `workflow-lab-java` queue. Run `make dev-temporal` and `make dev-worker-java` for a manual session, or use the launcher and manage the worker from Chat or Jobs.
+- **View logs** shows correlated events with `"backend":"java"` across the API, MCP process, and worker.
+
+## Run a configurable inventory workflow with Restate
+
+With **Start Lab.command**, Restate starts and registers automatically when Java is enabled. **Stop Lab.command** stops its Java process and container, preserving the journal.
+
+For a manual session, build Java and keep the Java API and web app running. In a separate terminal, run `make dev-restate-service`. Once it is listening, run `make start-restate` and `make register-restate` from the project folder. Docker Desktop reaches the Java endpoint through `http://host.docker.internal:9080` by default. Set `RESTATE_DEPLOYMENT_URL` if you use a different address reachable from the Restate container.
+
+Open **Workflows**. Enter up to three inventory SKUs and choose whether to look up pickup hours, pause when an item is unavailable, and ask Ollama for a summary. With the default two-item example, the workflow pauses because `MUG-17` is out of stock. Select **Continue with available items** or **Cancel this run**. The decision and saved results appear under the same run ID.
+
+To try recovery with a manual Restate session, stop the terminal running `make dev-restate-service` while approval is pending. Start it again, then approve from **Workflows**. Restate retains the completed lookups and the approval wait. Press **Control+C** in the service terminal and run `make stop-restate` to shut down a manual session. Its journal volume is retained.
+
+The Java API exposes `POST /api/workflows`, `GET /api/workflows/{id}`, and `POST /api/workflows/{id}/decision` for this Restate demo. The last endpoint accepts a `decision` of `continue` or `cancel`.
+
+## Try incremental chat responses
+
+Select any backend, choose its **loop**, **State machine**, or **Temporal** engine, and enable **Stream response**. Text appears as Ollama generates it. Tool calls show progress, and a new model call replaces the intermediate draft. The completed reply, tool trace, and token totals become part of the conversation only after the final completion event.
+
+Streaming is off by default and is supported by Go, TypeScript, Python, and Java for all three chat engines. **Run in background** always submits a Temporal job and returns a complete report through Jobs. The checkbox applies to **Send** only. Temporal displays coalesced draft snapshots from activity heartbeats, so text arrives in small batches. Fast tool progress can be missed between polls, but the final trace includes every completed tool call. Previews are capped at 16,000 characters; the completed reply remains full length.
+
+Try a short greeting, the two-item stock and pickup example, then turn streaming off and repeat. For a graph run interrupted by a failure, use **Resume saved run** to continue from the last checkpoint.
+
+To test Temporal recovery, choose **Temporal**, start a new chat, enable streaming, and stop the worker before sending. The chat waits until you start the worker. You can also stop the worker while text is appearing. Temporal retries the unfinished model activity after detecting the failure, and its new draft replaces the prior attempt. Completed activity results remain recorded. Closing the tab or timing out the HTTP wait leaves the workflow running; **Resume saved run** reattaches to the same ID. An interrupted model call may generate a different draft and consume additional inference work, while the final token totals describe the successful model activities.
 
 ## Compare Ollama models
 
@@ -69,23 +100,29 @@ flowchart LR
     Vite --> Go["Go API · 8080"]
     Vite --> TS["TypeScript API · 8081"]
     Vite --> Py["Python API · 8082"]
-    Go & TS & Py --> Contract["Shared OpenAPI spec"]
-    Go & TS & Py --> Ollama["Local Ollama"]
-    Go & TS & Py --> MCP["API's inventory MCP child"]
-    Go & TS & Py --> DB["PostgreSQL · backend-specific checkpoints"]
-    Go & TS & Py --> Temporal["Temporal server"]
+    Vite --> Java["Java API · 8083"]
+    Go & TS & Py & Java --> Contract["Shared OpenAPI spec"]
+    Go & TS & Py & Java --> Ollama["Local Ollama"]
+    Go & TS & Py & Java --> MCP["API's inventory MCP child"]
+    Go & TS & Py & Java --> DB["PostgreSQL · backend-specific checkpoints"]
+    Go & TS & Py & Java --> Temporal["Temporal server"]
     Temporal --> GoW["Go worker · workflow-lab-chat"]
     Temporal --> TSW["TypeScript worker · workflow-lab-typescript"]
     Temporal --> PyW["Python worker · workflow-lab-python"]
-    GoW & TSW & PyW --> Ollama
-    GoW & TSW & PyW --> WorkerMCP["Worker's inventory MCP child"]
+    Temporal --> JavaW["Java worker · workflow-lab-java"]
+    GoW & TSW & PyW & JavaW --> Ollama
+    GoW & TSW & PyW & JavaW --> WorkerMCP["Worker's inventory MCP child"]
+    Java --> Restate["Restate server · workflow journal"]
+    Restate --> RestateJava["Java approval service"]
+    RestateJava --> Ollama
+    RestateJava --> RestateMCP["Approval service MCP child"]
 ```
 
 See the [code walkthrough](docs/code-walkthrough.md) for the path from the chat form to the model, the tools, and the final reply.
 
 ## Compare the engines
 
-Choose **Go**, **TypeScript**, or **Python** in the **Backend** picker. Use the same model and a fresh chat for each run.
+Choose **Go**, **TypeScript**, **Python**, or **Java** in the **Backend** picker. Use the same model and a fresh chat for each run.
 
 1. Select the direct loop for your backend and ask “Is LAMP-42 in stock, and what are the pickup hours at its warehouse?” Expand the tool calls to see their arguments and results.
 2. Select **New chat** to clear the conversation, choose **State machine**, and ask the same question.
@@ -94,7 +131,7 @@ Choose **Go**, **TypeScript**, or **Python** in the **Backend** picker. Use the 
 
 The Go loop calls the model, runs any requested tools, and repeats until the model answers. The state-machine engine uses [LangGraphGo](https://github.com/smallnest/langgraphgo) to schedule two graph nodes, one for Ollama and one for the next MCP tool call. A two-step tool request typically visits **Ask model → Run tools → Ask model → Run tools → Ask model → Complete**. All three engines share the same tools and limits. The Go loop keeps its working state in memory. The state machine uses PostgreSQL checkpoints. Reply wording and tool selection can vary across model runs.
 
-Go displays one **Run tools** transition per batch. TypeScript and Python display one per tool call. All three save a checkpoint after each successful tool call. Expand **Tool calls** to compare the actual calls across runs.
+Go displays one **Run tools** transition per batch. TypeScript, Python, and Java display one per tool call. All four save a checkpoint after each successful tool call. Expand **Tool calls** to compare the actual calls across runs.
 
 ## Temporal workflow and worker restart (Go)
 
@@ -198,7 +235,7 @@ Expand the tool details after each reply to check what happened. Model behavior 
 
 ## Stop the app
 
-For a shortcut-managed session, double-click **Stop Lab.command** to stop all three backends. For a manual TypeScript or Python session, press **Control+C** in the API and worker terminals.
+For a shortcut-managed session, double-click **Stop Lab.command** to stop the launcher-managed backends. For a manual TypeScript or Python session, press **Control+C** in the API and worker terminals.
 
 - If you started the servers yourself, press **Control+C** in each terminal running `make dev-web` and `make dev-api`.
 - If the servers are running in the background, use the command below to find their process IDs. Look for `node` on port 5173 (Vite) and `api` on port 8080 (Go). Run `kill` followed by the two matching PIDs. If a port has no listener, that service is already stopped.
@@ -238,7 +275,7 @@ In the app, open **API reference** to browse the OpenAPI contract and send a tes
 
 The viewer shows up to 500 recent backend events and 100 browser events from the current tab. The API, MCP child processes, and Temporal worker keep bounded log files in `.lab/logs`. Set `LAB_LOG_DIR` to the same directory for the API and worker if you customize the location.
 
-Each browser request sends an `X-Correlation-ID` header. All three APIs accept IDs containing 16–64 letters, digits, underscores, or hyphens, generate a replacement when needed, and echo the accepted ID even on error responses. A reply shows its correlation ID under the assistant text. The browser reuses the ID when it resumes a saved turn.
+Each browser request sends an `X-Correlation-ID` header. All four APIs accept IDs containing 16–64 letters, digits, underscores, or hyphens, generate a replacement when needed, and echo the accepted ID even on error responses. A reply shows its correlation ID under the assistant text. The browser reuses the ID when it resumes a saved turn.
 
 App logs use one JSON object per line, with `time`, `level`, `service`, `component`, `msg`, and `correlation_id` for request-scoped events. Specific events add fields such as `engine`, `tool`, `status`, `duration_ms`, and `workflow_id`. Open the browser’s Developer Tools console for web logs. The APIs, workers, and MCP processes write application logs to stderr. TypeScript and Python events include a `backend` field and language-specific service names such as `api-typescript`, `mcp-python`, and `temporal-worker-python`. The app logs operational metadata and leaves prompts, response text, tool arguments and results out of the logs.
 
@@ -274,13 +311,14 @@ curl -i -H 'X-Correlation-ID: logging-demo-0001' http://127.0.0.1:8080/api/ready
 
 ## OpenAPI contract
 
-All three APIs serve the same [OpenAPI 3.1 contract](apps/api/internal/httpapi/contract/openapi.yaml). It covers chat, health, models, MCP discovery, logs, database inspection, and jobs. The **API reference** panel sends its test requests to the selected backend.
+All four APIs serve the same [OpenAPI 3.1 contract](apps/api/internal/httpapi/contract/openapi.yaml). It covers chat, health, models, MCP discovery, logs, database inspection, and jobs. The **API reference** panel sends its test requests to the selected backend.
 
 - Go serves the spec at [port 8080](http://127.0.0.1:8080/api/openapi.yaml). Its routes and transport models are generated from the YAML.
 - TypeScript serves the same YAML at [port 8081](http://127.0.0.1:8081/api/openapi.yaml), with a Vite proxy at `/typescript/api/openapi.yaml`. It implements the routes in TypeScript and validates JSON bodies with Zod.
+- Java serves the same YAML at [port 8083](http://127.0.0.1:8083/api/openapi.yaml). Vite proxies it at `/java/api/openapi.yaml`.
 - Python serves the same YAML at [port 8082](http://127.0.0.1:8082/api/openapi.yaml), with a Vite proxy at `/python/api/openapi.yaml`. FastAPI handles the routes and Pydantic validates JSON bodies.
 
-Edit the YAML first when changing the HTTP contract. Run `make generate-api` to refresh the Go bindings, then update the TypeScript and Python handlers and validation for any affected contract behavior.
+Edit the YAML first when changing the HTTP contract. Run `make generate-api` to refresh the Go bindings, then update the TypeScript, Python, and Java handlers and validation for any affected contract behavior.
 
 ## Health checks and tests
 
@@ -296,17 +334,18 @@ make build
 
 - `GET /api/health` checks the selected API process. `GET /api/ready` checks Ollama, the configured model, and MCP tool discovery, returning HTTP 503 when one of those dependencies is unavailable. The state-machine chat request checks PostgreSQL when opening a run.
 - `POST /api/chat` accepts alternating user and assistant messages ending with a user message. Set `"engine":"state-machine"` in the request to use the state machine. Use `"engine":"temporal"` for Temporal. The default is `"engine":"loop"`. The response includes `engine` and `message`, plus a `tools` array when calls were made and a `states` array for the state machine. The request is limited to 512 KiB and 41 messages, with an 8,000-byte limit per user message.
-- `make test` runs the Go tests and integration tests for TypeScript and Python. These check the served spec, a chained tool call through the MCP child, token counts, and correlation IDs with simulated Ollama responses. The web tests cover worker status, stale poller identities, and which requests can change launcher state. `make build` compiles Go, type-checks TypeScript, compiles the Python modules, and bundles the frontend. Run `make install install-py` before these checks. Run `npm run preview --workspace apps/web` to serve the built frontend locally on port 4173 with the Go API running.
+- `make test` runs the Go tests and integration tests for TypeScript and Python. These check the served spec, a chained tool call through the MCP child, token counts, and correlation IDs with simulated Ollama responses. Streaming checks cover UTF-8 decoding, incomplete responses, cancellation, preview limits, and clearing drafts on retry. The web tests cover worker status, stale poller identities, and which requests can change launcher state. `make build` compiles Go, type-checks TypeScript, compiles the Python modules, and bundles the frontend. Run `make install install-py` before these checks. Run `npm run preview --workspace apps/web` to serve the built frontend locally on port 4173 with the Go API running.
 
 ### Run the recovery integration tests
 
-Start Docker Desktop, then run `make install install-py` and `make test-integration`. The suite runs Go, TypeScript, and Python through the same recovery scenarios. It simulates an Ollama failure after a real MCP call, restarts the API, verifies checkpoint recovery, and checks that the same Temporal job completes after its worker starts. It also checks duplicate submissions, rejected conflicting input, and correlated worker and MCP logs.
+Start Docker Desktop, then run `make install install-py`, `make build-java`, and `make test-integration`. The suite tests Go, TypeScript, and Python, plus Java when the Java build is present. It simulates an Ollama failure after a real MCP call, restarts the API, verifies checkpoint recovery, and checks that the same Temporal job completes after its worker starts. It also checks duplicate submissions, rejected conflicting input, and correlated worker and MCP logs. For every backend, streamed Temporal tests disconnect and reattach a queued chat, kill the worker after draft text appears, and verify the replacement retries only the unfinished model activity. Java unit tests run during `make build-java`.
 
 The suite uses a simulated Ollama server and disposable PostgreSQL and Temporal containers. Docker assigns separate ports, and the suite removes its test project and volumes at the end. GitHub Actions runs the same suite.
 
 ## Repository layout
 
 - `apps/web` contains the shared chat interface and Vite proxies.
+- `apps/api-java` contains the Java API, MCP server, Temporal worker, and Restate approval service.
 - `apps/api-py/workflow_lab` contains the Python API, MCP server, and workflow worker.
 - `apps/api-ts/src` contains the TypeScript API, MCP server, and workflow worker.
 - `apps/api/cmd/api` starts the Go service and wires its dependencies.

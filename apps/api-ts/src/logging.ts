@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const directory = resolve(fileURLToPath(new URL('../../../', import.meta.url)), process.env.LAB_LOG_DIR || '.lab/logs');
 const maxBytes = 512 * 1024;
-const sources = ['api-typescript', 'mcp-typescript', 'mcp-worker-typescript', 'temporal-worker-typescript', 'api', 'api-mcp', 'temporal-worker', 'worker-mcp', 'api-python', 'mcp-python', 'mcp-worker-python', 'temporal-worker-python'];
+const sources = ['api-typescript', 'mcp-typescript', 'mcp-worker-typescript', 'temporal-worker-typescript', 'api', 'api-mcp', 'temporal-worker', 'worker-mcp', 'api-python', 'mcp-python', 'mcp-worker-python', 'temporal-worker-python', 'api-java', 'mcp-java', 'temporal-worker-java', 'mcp-worker-java', 'restate-java', 'mcp-restate-java'];
 
 export type Trace = { correlationId: string; service: string };
 

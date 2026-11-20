@@ -48,7 +48,13 @@ func (e TemporalEngine) Reply(ctx context.Context, request chat.Request) (chat.R
 	// Canceling the HTTP wait leaves the workflow running in Temporal.
 	// Another request with the same ID can reattach and read the result.
 	var reply chat.Reply
-	if err := run.Get(ctx, &reply); err != nil {
+	var waitErr error
+	if chat.Streaming(ctx) {
+		reply, waitErr = e.waitProgress(ctx, run)
+	} else {
+		waitErr = run.Get(ctx, &reply)
+	}
+	if err := waitErr; err != nil {
 		var application *temporal.ApplicationError
 		if errors.As(err, &application) && application.Type() == toolLimitType {
 			return chat.Reply{}, ErrToolLimit
@@ -192,7 +198,7 @@ func inventoryAuditWorkflow(ctx workflow.Context, input workflowInput) (chat.Rep
 }
 
 func (a Agent) Worker(c client.Client) worker.Worker {
-	w := worker.New(c, temporalQueue, worker.Options{Identity: os.Getenv("LAB_WORKER_IDENTITY"), WorkerStopTimeout: 2 * time.Second})
+	w := worker.New(c, temporalQueue, worker.Options{Identity: os.Getenv("LAB_WORKER_IDENTITY"), WorkerStopTimeout: 2 * time.Second, MaxHeartbeatThrottleInterval: 500 * time.Millisecond, DefaultHeartbeatThrottleInterval: 500 * time.Millisecond})
 	w.RegisterWorkflowWithOptions(inventoryWorkflow, workflow.RegisterOptions{Name: temporalWorkflow})
 	w.RegisterWorkflowWithOptions(inventoryAuditWorkflow, workflow.RegisterOptions{Name: auditWorkflow})
 	w.RegisterActivityWithOptions(a.discover, activity.RegisterOptions{Name: discoverActivity})
@@ -202,23 +208,8 @@ func (a Agent) Worker(c client.Client) worker.Worker {
 }
 
 func (a Agent) temporalAskModel(ctx context.Context, input modelInput) (ollama.Message, error) {
-	done := make(chan struct{})
-	defer close(done)
-	activity.RecordHeartbeat(ctx)
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				activity.RecordHeartbeat(ctx)
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	ctx, closeProgress := activityProgress(ctx)
+	defer closeProgress()
 	message, err := a.withModel(input.Model).askModel(ctx, input.Messages, input.Tools, input.Rounds, input.Calls)
 	if errors.Is(err, ErrToolLimit) {
 		return ollama.Message{}, temporal.NewNonRetryableApplicationError(err.Error(), toolLimitType, err)
@@ -227,6 +218,11 @@ func (a Agent) temporalAskModel(ctx context.Context, input modelInput) (ollama.M
 }
 
 func (a Agent) temporalCallTool(ctx context.Context, input toolInput) (chat.ToolEvent, error) {
+	ctx, closeProgress := activityProgress(ctx)
+	defer closeProgress()
+	if err := chat.Emit(ctx, chat.StreamEvent{Type: "tool-start", Name: input.Call.Function.Name}); err != nil {
+		return chat.ToolEvent{}, err
+	}
 	event := a.call(ctx, input.Call, input.Allowed)
-	return event, ctx.Err()
+	return event, chat.Emit(ctx, chat.StreamEvent{Type: "tool-complete", Name: input.Call.Function.Name})
 }

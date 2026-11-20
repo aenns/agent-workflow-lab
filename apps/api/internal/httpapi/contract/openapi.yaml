@@ -101,6 +101,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChatReply'
+            application/x-ndjson:
+              schema:
+                type: string
+                description: |
+                  When stream is true, each line is a JSON event. model-start resets
+                  partial text for the next model call. text carries a text fragment.
+                  Temporal model-snapshot events carry replacement text, activityId,
+                  attempt, and truncated (preview capped at 16000 characters).
+                  status carries a human-readable message. Heartbeat previews are
+                  best effort and coalesced; fast tool progress may be missed.
+                  tool-start and tool-complete carry a tool name. complete carries
+                  the authoritative ChatReply in reply. error carries error text.
+                  A stream must end with complete or error. HTTP errors before
+                  streaming starts use the normal JSON error response.
         '400':
           description: Invalid JSON, messages, engine, or run ID
           headers:
@@ -419,6 +433,112 @@ paths:
         '503':
           $ref: '#/components/responses/DiagnosticsUnavailable'
 
+  /api/workflows:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+    post:
+      operationId: submitInventoryWorkflow
+      tags: [Java workflows]
+      x-backends: [java]
+      summary: Submit a configurable inventory workflow (Java only)
+      description: Java extension backed by Restate. Other backends do not implement this route. The returned ID is also the correlation ID for the workflow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryWorkflowDefinition'
+            example: {items: [LAMP-42, MUG-17], pickupHours: true, requireApproval: true, summarize: true}
+      responses:
+        '202':
+          description: Restate accepted the workflow
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryWorkflowRun'
+        '400':
+          description: Invalid workflow definition
+        '413':
+          description: Request exceeds 8192 bytes
+        '415':
+          description: Send application/json
+        '503':
+          description: Restate or its Java service is unavailable
+  /api/workflows/{workflowId}:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+      - name: workflowId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getInventoryWorkflow
+      tags: [Java workflows]
+      x-backends: [java]
+      summary: Read an inventory workflow (Java only)
+      description: Returns the latest Restate state, including saved tool results and any approval wait.
+      responses:
+        '200':
+          description: Current workflow state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryWorkflowRun'
+        '404':
+          description: Invalid workflow ID
+        '503':
+          description: Restate or its Java service is unavailable
+  /api/workflows/{workflowId}/decision:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationID'
+      - name: workflowId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: decideInventoryWorkflow
+      tags: [Java workflows]
+      x-backends: [java]
+      summary: Approve or cancel an inventory workflow (Java only)
+      description: Resolves the durable approval wait. Repeating an already applied decision can return the saved workflow state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: {type: string, enum: [continue, cancel]}
+            example: {decision: continue}
+      responses:
+        '200':
+          description: Decision accepted, or the saved state for a repeated decision
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted: {type: boolean}
+                  id: {type: string, format: uuid}
+                  status: {type: string}
+                additionalProperties: true
+        '400':
+          description: Invalid decision
+        '404':
+          description: Invalid workflow ID
+        '409':
+          description: The run cannot accept another decision
+        '413':
+          description: Request exceeds 4096 bytes
+        '415':
+          description: Send application/json
+        '503':
+          description: Restate or its Java service is unavailable
+
 components:
   responses:
     JobError:
@@ -458,6 +578,44 @@ components:
       schema:
         $ref: '#/components/schemas/RunIdentifier'
   schemas:
+    InventoryWorkflowDefinition:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 3
+          description: SKUs are normalized to uppercase and deduplicated by the service.
+          items: {type: string, pattern: '^[A-Za-z0-9-]{1,40}$'}
+        pickupHours: {type: boolean, default: true}
+        requireApproval: {type: boolean, default: true}
+        summarize: {type: boolean, default: true}
+    InventoryWorkflowRun:
+      type: object
+      required: [id, status]
+      properties:
+        id: {type: string, format: uuid}
+        status:
+          type: string
+          enum: [queued, running, waiting-for-approval, completed, cancelled, failed]
+        inventory:
+          type: array
+          items:
+            type: object
+            required: [sku, result]
+            properties:
+              sku: {type: string}
+              result: {type: object, additionalProperties: true}
+        pickup:
+          type: array
+          items: {type: object, additionalProperties: true}
+        steps:
+          type: array
+          items: {type: string}
+        decision: {type: string, enum: [continue, cancel]}
+        summary: {type: string}
+        error: {type: string}
     Health:
       type: object
       required: [status]
@@ -513,6 +671,10 @@ components:
       type: object
       required: [messages]
       properties:
+        stream:
+          type: boolean
+          default: false
+          description: Optional incremental response. Supported by all chat engines on every backend. Temporal emits coalesced activity heartbeat previews. Background jobs return complete reports.
         model:
           type: string
           description: Ollama model tag. Requests use the configured default when omitted.

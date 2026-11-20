@@ -1,3 +1,4 @@
+import type { Emit } from '../../../packages/chat-stream.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
@@ -34,7 +35,7 @@ export function fingerprint(input: RunInput) {
   return createHash('sha256').update(JSON.stringify([input.model, input.messages])).digest('hex');
 }
 
-export async function runGraph(client: Client, input: RunInput, trace: Trace, signal: AbortSignal) {
+export async function runGraph(client: Client, input: RunInput, trace: Trace, signal: AbortSignal, emit?: Emit) {
   const id = input.runId ?? randomUUID();
   if (running.has(id)) throw new HttpError(409, 'This run is already in progress.');
   running.add(id);
@@ -43,10 +44,10 @@ export async function runGraph(client: Client, input: RunInput, trace: Trace, si
     const config = { configurable: { thread_id: id }, signal };
     const graph = new StateGraph(State)
       .addNode('ask', async ({ turn, states }) => ({
-        turn: await askModel(client, turn, trace, signal), states: [...states, 'Ask model'],
+        turn: await askModel(client, turn, trace, signal, emit), states: [...states, 'Ask model'],
       }))
       .addNode('tools', async ({ turn, states }) => ({
-        turn: await runNextTool(client, turn, trace, signal), states: [...states, 'Run tools'],
+        turn: await runNextTool(client, turn, trace, signal, emit), states: [...states, 'Run tools'],
       }))
       .addEdge(START, 'ask')
       .addConditionalEdges('ask', ({ turn }) => hasCalls(turn) ? 'tools' : END, ['tools', END])

@@ -9,3 +9,4 @@ dist/
 !.env.example
 .venv/
 __pycache__/
+apps/api-java/target/

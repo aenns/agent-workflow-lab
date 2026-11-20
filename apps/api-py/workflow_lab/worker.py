@@ -1,6 +1,7 @@
 """Run the Python Temporal worker and its local MCP child."""
 
 import asyncio
+from datetime import timedelta
 import os
 import signal
 
@@ -8,6 +9,7 @@ from temporalio import activity
 from temporalio.worker import Worker
 
 from .agent import open_agent
+from .temporal_progress import activity_progress
 from .telemetry import log
 from .temporal_jobs import QUEUE, get_client
 from .workflows import InventoryPython
@@ -24,14 +26,18 @@ async def main():
     async with open_agent(SERVICE, "mcp-worker-python") as agent:
         @activity.defn(name="python_ask")
         async def ask(turn: dict, correlation_id: str) -> dict:
-            return await agent.ask(turn, correlation_id)
+            async with activity_progress() as emit:
+                return await agent.ask(turn, correlation_id, emit)
 
         @activity.defn(name="python_call_tool")
         async def call_tool(turn: dict, correlation_id: str) -> dict:
-            return await agent.call_next(turn, correlation_id)
+            async with activity_progress() as emit:
+                return await agent.call_next(turn, correlation_id, emit)
 
         async with Worker(await get_client(), task_queue=QUEUE, workflows=[InventoryPython],
-                          activities=[ask, call_tool], identity=os.getenv("LAB_WORKER_IDENTITY")):
+                          activities=[ask, call_tool],
+                          max_heartbeat_throttle_interval=timedelta(milliseconds=500),
+                          default_heartbeat_throttle_interval=timedelta(milliseconds=500), identity=os.getenv("LAB_WORKER_IDENTITY")):
             log(SERVICE, "", "worker", "worker.started", task_queue=QUEUE)
             await stop.wait()
 

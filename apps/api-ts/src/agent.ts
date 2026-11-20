@@ -1,3 +1,4 @@
+import { jsonLines, type Emit } from '../../../packages/chat-stream.ts';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -63,16 +64,42 @@ export async function listTools(client: Client, trace: Trace, signal: AbortSigna
   return tools;
 }
 
-export async function askModel(client: Client, turn: Turn, trace: Trace, signal: AbortSignal): Promise<Turn> {
+export async function askModel(client: Client, turn: Turn, trace: Trace, signal: AbortSignal, emit?: Emit): Promise<Turn> {
   // Give the model one final request without tools after it exhausts its tool budget.
   const final = turn.rounds >= 4 || turn.tools.length >= 8;
   const tools = final ? [] : (await listTools(client, trace, signal)).map(({ name, description, inputSchema }) => ({
     type: 'function', function: { name, description, parameters: inputSchema },
   }));
+  await emit?.({ type: 'model-start' });
   const response = await ollama('/api/chat', trace, signal,
-    { model: turn.model, messages: turn.transcript, tools, stream: false, think: false }, turn.model);
+    { model: turn.model, messages: turn.transcript, tools, stream: !!emit, think: false }, turn.model);
   if (!response.ok) throw new HttpError(502, 'Ollama could not complete the chat request.');
-  const data = await response.json() as { message: ModelMessage; prompt_eval_count?: number; eval_count?: number };
+  type Completion = { message: ModelMessage; prompt_eval_count?: number; eval_count?: number };
+  let data: Completion;
+  if (emit) {
+    if (!response.body) throw new HttpError(502, 'Ollama returned no stream.');
+    const message: ModelMessage = { role: 'assistant', content: '', tool_calls: [] };
+    let completed = false;
+    data = { message };
+    for await (const chunk of jsonLines(response.body)) {
+      if (chunk.error) throw new HttpError(502, 'Ollama could not complete the stream.');
+      const part = chunk.message;
+      if (part?.content) {
+        message.content += part.content;
+        await emit({ type: 'text', text: part.content });
+      }
+      if (part?.tool_calls) message.tool_calls!.push(...part.tool_calls);
+      if (chunk.done) {
+        data.prompt_eval_count = chunk.prompt_eval_count;
+        data.eval_count = chunk.eval_count;
+        completed = true;
+        break;
+      }
+    }
+    if (!completed) throw new HttpError(502, 'Ollama stream ended before completion.');
+  } else {
+    data = await response.json() as Completion;
+  }
   if (data.message?.role !== 'assistant' || typeof data.message.content !== 'string') {
     throw new HttpError(502, 'Ollama returned an invalid reply.');
   }
@@ -91,10 +118,11 @@ export function hasCalls(turn: Turn) {
 
 // Checkpoint and schedule one tool call at a time, even when the model
 // requested several calls in its last message.
-export async function runNextTool(client: Client, turn: Turn, trace: Trace, signal: AbortSignal): Promise<Turn> {
+export async function runNextTool(client: Client, turn: Turn, trace: Trace, signal: AbortSignal, emit?: Emit): Promise<Turn> {
   const [call, ...pending] = turn.pending;
   signal.throwIfAborted();
   const { name, arguments: args } = call.function;
+  await emit?.({ type: 'tool-start', name });
   const start = Date.now();
   let result: string;
   let isError = true;
@@ -110,6 +138,7 @@ export async function runNextTool(client: Client, turn: Turn, trace: Trace, sign
   }
   const durationMs = Date.now() - start;
   log(trace, 'mcp-client', 'mcp.call.completed', { tool: name, tool_error: isError, duration_ms: durationMs });
+  await emit?.({ type: 'tool-complete', name });
   return { ...turn, pending,
     tools: [...turn.tools, { name, arguments: args ?? null, result, isError, durationMs }],
     transcript: [...turn.transcript, { role: 'tool', tool_name: name, content: result }] };
@@ -120,11 +149,11 @@ export function reply(turn: Turn, engine: Engine, runId?: string, states?: strin
     message: { role: 'assistant' as const, content: turn.transcript.at(-1)?.content ?? '' } };
 }
 
-export async function runLoop(client: Client, input: RunInput, trace: Trace, signal: AbortSignal) {
+export async function runLoop(client: Client, input: RunInput, trace: Trace, signal: AbortSignal, emit?: Emit) {
   let turn = newTurn(input);
   for (;;) {
-    turn = await askModel(client, turn, trace, signal);
+    turn = await askModel(client, turn, trace, signal, emit);
     if (!hasCalls(turn)) return reply(turn, 'loop');
-    while (hasCalls(turn)) turn = await runNextTool(client, turn, trace, signal);
+    while (hasCalls(turn)) turn = await runNextTool(client, turn, trace, signal, emit);
   }
 }

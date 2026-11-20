@@ -2,6 +2,8 @@
 
 import asyncio
 from datetime import timedelta
+from contextlib import suppress
+import json
 import os
 from uuid import uuid4
 
@@ -11,6 +13,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
 
 from .agent import APIError, fingerprint, new_turn
+from .temporal_progress import progress_event
 
 ADDRESS = os.getenv("TEMPORAL_ADDR") or "127.0.0.1:7233"
 QUEUE = "workflow-lab-python"
@@ -51,13 +54,36 @@ async def start(model, messages, workflow_id, correlation_id, prompt=None):
         return handle
 
 
-async def temporal_chat(model, messages, correlation_id, run_id):
+async def temporal_chat(model, messages, correlation_id, run_id, emit=None):
     if run_id.startswith(JOB_PREFIX):
         raise APIError(400, "Choose a chat run ID.")
     handle = await start(model, messages, run_id, correlation_id)
     try:
         # Cancelling this wait leaves the workflow itself running.
-        return await handle.result()
+        if emit is None:
+            return await handle.result()
+        client = await get_client()
+        result = asyncio.create_task(handle.result())
+        last = None
+        try:
+            await emit({"type": "status", "message": "Waiting for a Temporal worker…"})
+            while not result.done():
+                info = await handle.describe()
+                for pending in info.raw_description.pending_activities:
+                    if not pending.heartbeat_details.payloads:
+                        continue
+                    values = await client.data_converter.decode(pending.heartbeat_details.payloads)
+                    event = progress_event(values[0]) if values else None
+                    key = json.dumps(event)
+                    if event and key != last:
+                        await emit(event)
+                        last = key
+                await asyncio.wait({result}, timeout=0.5)
+            return await result
+        finally:
+            result.cancel()
+            with suppress(asyncio.CancelledError):
+                await result
     except WorkflowFailureError as error:
         raise APIError(502, "The Temporal workflow could not complete this chat.") from error
 

@@ -5,6 +5,10 @@ const server = {
   host: '127.0.0.1',
   strictPort: true,
   proxy: {
+    '/java/api': {
+      target: process.env.JAVA_API_PROXY_TARGET || 'http://127.0.0.1:8083',
+      rewrite: (path) => path.replace(/^\/java/, ''),
+    },
     '/python/api': {
       target: process.env.PY_API_PROXY_TARGET || 'http://127.0.0.1:8082',
       rewrite: (path) => path.replace(/^\/python/, ''),

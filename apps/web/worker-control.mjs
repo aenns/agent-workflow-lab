@@ -7,9 +7,10 @@ const queues = {
   go: 'workflow-lab-chat',
   typescript: 'workflow-lab-typescript',
   python: 'workflow-lab-python',
+  java: 'workflow-lab-java',
 };
 const launcherDirectory = fileURLToPath(new URL('../../.lab/launcher/', import.meta.url));
-const route = /^\/__lab\/temporal-worker\/(go|typescript|python)(?:\/(start|stop))?$/;
+const route = /^\/__lab\/temporal-worker\/(go|typescript|python|java)(?:\/(start|stop))?$/;
 
 function send(response, status, data) {
   response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -44,7 +45,7 @@ export function workerControl({
         const [, backend, action] = match;
         const key = join(state, 'worker-' + backend);
         // A manually started dev server can inspect queues without managing processes.
-        const managed = enabled && existsSync(state) && !existsSync(join(state, 'stop'));
+        const managed = enabled && (backend !== 'java' || existsSync(key + '.managed')) && existsSync(state) && !existsSync(join(state, 'stop'));
         try {
           if (action) {
             // Browser mutations must originate from this loopback dev server.

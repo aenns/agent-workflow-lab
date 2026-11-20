@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { jsonLines } from '../../../packages/chat-stream.ts';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
@@ -15,15 +16,30 @@ test('TypeScript HTTP turn uses both MCP tools and propagates the correlation ID
   const model = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
-    requests.push({ headers: String(request.headers['x-correlation-id']), messages: JSON.parse(body).messages });
+    const input = JSON.parse(body);
+    requests.push({ headers: String(request.headers['x-correlation-id']), messages: input.messages });
+    const turns = input.messages.filter((message: { role: string }) => message.role === 'tool').length;
+    if (input.messages.some((message: { content: string }) => message.content === 'broken-stream')) {
+      response.end(JSON.stringify({ message: { role: 'assistant', content: 'partial' }, done: false }) + '\n');
+      return;
+    }
     const tool = (name: string, args: object) => ({
       role: 'assistant', content: '', tool_calls: [{ function: { name, arguments: args } }],
     });
-    const message = requests.length === 1 ? tool('lookup_inventory', { sku: 'LAMP-42' }) :
-      requests.length === 2 ? tool('warehouse_hours', { warehouse: 'north' }) :
+    const message = turns === 0 ? tool('lookup_inventory', { sku: 'LAMP-42' }) :
+      turns === 1 ? tool('warehouse_hours', { warehouse: 'north' }) :
         { role: 'assistant', content: 'There are seven lamps at the north warehouse.' };
-    response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({ message, prompt_eval_count: 10, eval_count: 2 }));
+    if (input.stream) {
+      response.setHeader('Content-Type', 'application/x-ndjson');
+      if (message.content) {
+        response.write(JSON.stringify({ message: { role: 'assistant', content: 'There are ' }, done: false }) + '\n');
+        response.write(JSON.stringify({ message: { role: 'assistant', content: message.content.slice(10) }, done: false }) + '\n');
+      } else response.write(JSON.stringify({ message, done: false }) + '\n');
+      response.end(JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, prompt_eval_count: 10, eval_count: 2 }) + '\n');
+    } else {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ message, prompt_eval_count: 10, eval_count: 2 }));
+    }
   });
   model.listen(0, '127.0.0.1');
   await once(model, 'listening');
@@ -70,6 +86,50 @@ test('TypeScript HTTP turn uses both MCP tools and propagates the correlation ID
     assert.ok(scoped.some((entry: { service: string; backend: string }) =>
       entry.service === 'api-typescript' && entry.backend === 'typescript'));
     assert.equal(scoped.filter((entry: { service: string }) => entry.service === 'mcp-typescript').length, 2);
+    const streamed = await fetch(base + '/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'Check the lamp and warehouse hours.' }] }),
+    });
+    assert.match(streamed.headers.get('Content-Type') ?? '', /application\/x-ndjson/);
+    assert(streamed.body);
+    const events = [];
+    for await (const event of jsonLines(streamed.body)) events.push(event);
+    assert.equal(events.filter(event => event.type === 'model-start').length, 3);
+    assert.deepEqual(events.filter(event => event.type === 'tool-start').map(event => event.name), ['lookup_inventory', 'warehouse_hours']);
+    assert.equal(events.filter(event => event.type === 'tool-complete').length, 2);
+    assert.equal(events.filter(event => event.type === 'text').map(event => event.text).join(''), reply.message.content);
+    assert.equal(events.at(-1).type, 'complete');
+    assert.deepEqual(events.at(-1).reply.usage, reply.usage);
+    assert.deepEqual(events.at(-1).reply.tools.map((tool: {name: string}) => tool.name), reply.tools.map((tool: {name: string}) => tool.name));
+    const broken = await fetch(base + '/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'broken-stream' }] }),
+    });
+    const brokenEvents = [];
+    for await (const event of jsonLines(broken.body!)) brokenEvents.push(event);
+    assert.equal(brokenEvents.at(-1).type, 'error');
+    assert.ok(!brokenEvents.some(event => event.type === 'complete'));
+    // Optional real PostgreSQL coverage, enabled by the integration validation command.
+    if (process.env.TEST_STREAM_GRAPH) {
+      const body = { stream: true, engine: 'state-machine', runId: 'stream-test-' + Date.now(),
+        messages: [{ role: 'user', content: 'Check the lamp and warehouse hours.' }] };
+      for (const cached of [false, true]) {
+        const response = await fetch(base + '/api/chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const events = [];
+        for await (const event of jsonLines(response.body!)) events.push(event);
+        assert.equal(events.at(-1).type, 'complete', JSON.stringify(events));
+        assert.equal(events.at(-1).reply.tools.length, 2);
+        assert.equal(events.at(-1).reply.states.at(-1), 'Complete');
+        assert.equal(events.filter(event => event.type === 'tool-start').length, cached ? 0 : 2);
+      }
+    }
+    const invalidStream = await fetch(base + '/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stream: 'true', engine: 'temporal', messages: [{ role: 'user', content: 'Hello' }] }),
+    });
+    assert.equal(invalidStream.status, 400);
     const invalid = await fetch(base + '/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: [{ role: 'assistant', content: 'Invalid first role' }] }),
@@ -81,4 +141,21 @@ test('TypeScript HTTP turn uses both MCP tools and propagates the correlation ID
     model.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+// Exercise the same decoder used by the browser and Ollama adapter with real
+// byte boundaries, including a multibyte character split across chunks.
+test('NDJSON decoder handles fragmented UTF-8 and rejects malformed records', async () => {
+  const bytes = new TextEncoder().encode('{"text":"café"}\n\n{"done":true}');
+  const body = new ReadableStream<Uint8Array>({ start(controller) {
+    for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+    controller.close();
+  }});
+  const values = [];
+  for await (const value of jsonLines(body)) values.push(value);
+  assert.deepEqual(values, [{ text: 'café' }, { done: true }]);
+  const broken = new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('{"incomplete":')); controller.close();
+  }});
+  await assert.rejects(async () => { for await (const value of jsonLines(broken)) void value; }, SyntaxError);
 });

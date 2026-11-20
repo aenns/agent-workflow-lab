@@ -17,7 +17,7 @@ class InventoryPython:
         correlation_id = request["correlationId"]
         while True:
             turn = await workflow.execute_activity(
-                "python_ask", args=[turn, correlation_id], start_to_close_timeout=ACTIVITY_TIMEOUT,
+                "python_ask", args=[turn, correlation_id], start_to_close_timeout=ACTIVITY_TIMEOUT, heartbeat_timeout=timedelta(seconds=10),
                 retry_policy=RETRY,
             )
             if not turn["pending"]:
@@ -26,6 +26,6 @@ class InventoryPython:
                         "message": {"role": "assistant", "content": turn["transcript"][-1]["content"]}}
             while turn["pending"]:
                 turn = await workflow.execute_activity(
-                    "python_call_tool", args=[turn, correlation_id], start_to_close_timeout=ACTIVITY_TIMEOUT,
+                    "python_call_tool", args=[turn, correlation_id], start_to_close_timeout=ACTIVITY_TIMEOUT, heartbeat_timeout=timedelta(seconds=10),
                     retry_policy=RETRY,
                 )

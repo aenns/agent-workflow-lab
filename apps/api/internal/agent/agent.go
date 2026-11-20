@@ -202,14 +202,20 @@ func (t *turn) runTools(ctx context.Context, message ollama.Message) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		t.recordTool(ctx, call)
+		if err := t.recordTool(ctx, call); err != nil {
+			return err
+		}
 	}
 	t.rounds++
 	return nil
 }
 
-func (t *turn) recordTool(ctx context.Context, call ollama.ToolCall) {
+func (t *turn) recordTool(ctx context.Context, call ollama.ToolCall) error {
+	if err := chat.Emit(ctx, chat.StreamEvent{Type: "tool-start", Name: call.Function.Name}); err != nil {
+		return err
+	}
 	t.recordToolResult(t.agent.call(ctx, call, t.allowed[call.Function.Name]))
+	return chat.Emit(ctx, chat.StreamEvent{Type: "tool-complete", Name: call.Function.Name})
 }
 
 func (t *turn) recordToolResult(event chat.ToolEvent) {

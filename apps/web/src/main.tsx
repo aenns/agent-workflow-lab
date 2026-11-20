@@ -1,3 +1,4 @@
+import { jsonLines } from '../../../packages/chat-stream';
 import { apiPath, backendLabels, jobCorrelationId, readBackend, type Backend } from './backend';
 import { Database } from './database';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
@@ -7,14 +8,16 @@ import { Jobs, useJobs, type Job } from './jobs';
 import { TokenTrace, ToolTrace, type TokenUsage, type ToolEvent } from './traces';
 import { APIReference, Logs, MCPTools } from './diagnostics';
 import { correlatedFetch, correlationHeader } from './telemetry';
+import { Workflows } from './workflows';
 import { WorkerControl } from './worker-control';
 import './style.css';
 
 type Engine = 'loop' | 'state-machine' | 'temporal';
-type View = 'chat' | 'api' | 'tools' | 'logs' | 'jobs' | 'models' | 'database';
+type View = 'chat' | 'api' | 'tools' | 'logs' | 'jobs' | 'models' | 'database' | 'workflows';
 const views: { id: View; label: string; icon: string }[] = [
   { id: 'chat', label: 'Chat', icon: '◫' },
   { id: 'jobs', label: 'Jobs', icon: '◷' },
+  { id: 'workflows', label: 'Workflows', icon: '↪' },
   { id: 'models', label: 'Models', icon: '◆' },
   { id: 'api', label: 'API reference', icon: '{}' },
   { id: 'tools', label: 'MCP tools', icon: '◇' },
@@ -80,6 +83,9 @@ function App() {
   // Keep run details separate so the selected backend receives only conversation text.
   const [runs, setRuns] = useState<Record<number, Run>>({});
   const [prompt, setPrompt] = useState(() => savedTurn?.messages.at(-1)?.content ?? '');
+  const [stream, setStream] = useState(false);
+  const [partial, setPartial] = useState('');
+  const [streamStatus, setStreamStatus] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [readiness, setReadiness] = useState<Readiness>({ ready: false, detail: 'Checking connection…' });
@@ -138,7 +144,7 @@ function App() {
 
   useEffect(() => {
     latest.current?.scrollIntoView({ block: 'nearest' });
-  }, [messages, pending, view]);
+  }, [messages, pending, view, partial, streamStatus]);
 
   // Send the conversation as JSON and keep the draft available on failure.
   // Prevent the HTML form from navigating away from the chat page.
@@ -148,6 +154,8 @@ function App() {
     const conversation: Message[] = [...messages, { role: 'user', content: prompt.trim() }];
     setError('');
     setPending(true);
+    setPartial('');
+    setStreamStatus('Waiting for the model…');
     try {
       const runId = engine !== 'loop'
         ? (canResume ? savedTurn?.runId : crypto.randomUUID())
@@ -162,9 +170,42 @@ function App() {
       const response = await correlatedFetch(apiPath(backend, '/api/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: conversation, engine, model: model || undefined, runId }),
+        body: JSON.stringify({ messages: conversation, engine, model: model || undefined, runId, stream: stream || undefined }),
       }, correlationId, { engine, backend });
-      const result = await response.json().catch(() => null);
+      let result;
+      if (response.ok && response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
+        if (!response.body) throw new Error('The API returned no response stream.');
+        let completed = false;
+        for await (const event of jsonLines(response.body)) {
+          if (event.type === 'model-start') {
+            setPartial('');
+            setStreamStatus('Generating reply…');
+          } else if (event.type === 'model-snapshot') {
+            // A retry or reconnect supplies a whole draft, replacing the old attempt.
+            setPartial(event.text);
+            setStreamStatus(event.truncated ? 'Preview limit reached. Waiting for the complete reply…' :
+              `Generating reply…${event.attempt > 1 ? ` (attempt ${event.attempt})` : ''}`);
+          } else if (event.type === 'status') {
+            setStreamStatus(event.message);
+          } else if (event.type === 'text') {
+            setPartial((current) => current + event.text);
+          } else if (event.type === 'tool-start') {
+            setPartial('');
+            setStreamStatus('Running ' + event.name + '…');
+          } else if (event.type === 'tool-complete') {
+            setStreamStatus('Completed ' + event.name);
+          } else if (event.type === 'error') {
+            throw new Error(event.error);
+          } else if (event.type === 'complete') {
+            result = event.reply;
+            completed = true;
+            break;
+          }
+        }
+        if (!completed) throw new Error('The response stream ended before completion. Try again or resume the saved run.');
+      } else {
+        result = await response.json().catch(() => null);
+      }
       if (!response.ok) throw new Error(result?.error || `Could not reach the ${backendLabels[backend]} API. Try again.`);
       if (result?.message?.role !== 'assistant' || typeof result.message.content !== 'string') {
         throw new Error('The API returned an invalid reply. Try again.');
@@ -232,6 +273,7 @@ function App() {
 
   function selectBackend(next: Backend) {
     setBackend(next);
+    if (view === 'workflows' && next !== 'java') setView('chat');
     sessionStorage.setItem('workflow-lab:backend', next);
     setReadiness({ ready: false, detail: 'Checking connection…' });
     setCatalog(undefined);
@@ -242,6 +284,10 @@ function App() {
   }
 
   function changeView(next: View) {
+    if (next === 'workflows' && backend !== 'java') {
+      if (pending || jobPending) return;
+      selectBackend('java');
+    }
     if (next === 'models') {
       setOpenedLibrary(true);
       void loadModels();
@@ -273,7 +319,7 @@ function App() {
         </div>
         <nav aria-label="Workspace">
           {views.map((item) => (
-            <button type="button" key={item.id} aria-current={view === item.id ? 'page' : undefined}
+            <button type="button" key={item.id} disabled={item.id === 'workflows' && backend !== 'java' && (pending || jobPending)} aria-current={view === item.id ? 'page' : undefined}
               onClick={() => changeView(item.id)}>
               <span className="nav-icon" aria-hidden="true">{item.icon}</span>{item.label}
               {item.id === 'jobs' && !!jobFeed.unread.length && <span className="job-count" aria-label={`${jobFeed.unread.length} unread job notifications`}>{jobFeed.unread.length}</span>}
@@ -305,19 +351,20 @@ function App() {
             <button type="button" onClick={() => openJob(firstUnread)}>Open job</button>
           </div>}
         </div>
-        {/* Keep one control mounted when submitting a background job opens Jobs. */}
+        {/* Keep the worker mounted across Chat and Jobs, with a key distinct from its sibling views. */}
         {(view === 'jobs' || (view === 'chat' && engine === 'temporal')) &&
-          <WorkerControl key={backend} backend={backend} waitingForReply={view === 'chat' && pending} />}
-        {view === 'jobs' && <Jobs key={backend} backend={backend} jobs={jobFeed.jobs} unread={jobFeed.unread} error={jobFeed.error}
+          <WorkerControl key={`worker-${backend}`} backend={backend} waitingForReply={view === 'chat' && pending} />}
+        {view === 'jobs' && <Jobs key={`jobs-${backend}`} backend={backend} jobs={jobFeed.jobs} unread={jobFeed.unread} error={jobFeed.error}
           selectedId={selectedJob} onSelect={openJob} onLogs={openLogs} />}
         {openedLibrary && <div hidden={view !== 'models'}>
           <ModelLibrary key={backend} backend={backend} installed={catalog?.models ?? []} onInstalled={loadModels}
             onUse={(tag, openChat = true) => { setModel(tag); if (openChat) setView('chat'); }} />
         </div>}
-        {view === 'api' && <APIReference key={backend} backend={backend} />}
-        {view === 'tools' && <MCPTools key={backend} backend={backend} />}
-        {view === 'database' && <Database key={backend} backend={backend} initialRunId={databaseRunId} />}
-        {view === 'logs' && <Logs key={backend} backend={backend} filter={logFilter} setFilter={setLogFilter} />}
+        {view === 'workflows' && <Workflows onLogs={openLogs} />}
+        {view === 'api' && <APIReference key={`api-${backend}`} backend={backend} />}
+        {view === 'tools' && <MCPTools key={`tools-${backend}`} backend={backend} />}
+        {view === 'database' && <Database key={`database-${backend}`} backend={backend} initialRunId={databaseRunId} />}
+        {view === 'logs' && <Logs key={`logs-${backend}`} backend={backend} filter={logFilter} setFilter={setLogFilter} />}
         {view === 'chat' && (
       <section className="chat" aria-label="Chat">
         <div className="toolbar">
@@ -338,6 +385,10 @@ function App() {
               <option value="state-machine">State machine</option>
               <option value="temporal">Temporal</option>
             </select>
+            <label className="checkbox" title="Streams replies sent with Send. Temporal previews arrive in batches. Background jobs return a complete report in Jobs.">
+              <input type="checkbox" checked={stream} disabled={pending || jobPending}
+                onChange={(event) => setStream(event.target.checked)} /> Stream response
+            </label>
             <button type="button" onClick={reset} disabled={pending || jobPending}>New chat</button>
           </div>
         </div>
@@ -395,7 +446,11 @@ function App() {
           })}
           {pending && <>
             <article className="user"><strong>You</strong><p>{prompt.trim()}</p></article>
-            <p className="empty">Waiting for the model…</p>
+            {stream ? <article className="assistant">
+              <strong>Assistant · Streaming</strong>
+              {partial && <p>{partial}</p>}
+              <small role="status">{streamStatus}</small>
+            </article> : <p className="empty">Waiting for the model…</p>}
           </>}
           <div ref={latest} />
         </div>

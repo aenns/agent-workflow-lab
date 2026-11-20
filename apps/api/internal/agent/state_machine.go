@@ -154,7 +154,9 @@ func (a Agent) toolNode(ctx context.Context, state graphState) (graphState, erro
 		return state, fmt.Errorf("%w: no pending tool at tool node", ErrCheckpoint)
 	}
 	t := turn{agent: a, messages: state.Messages, allowed: toolNames(state.Tools), reply: state.Reply}
-	t.recordTool(ctx, state.Pending[0])
+	if err := t.recordTool(ctx, state.Pending[0]); err != nil {
+		return state, err
+	}
 	if err := ctx.Err(); err != nil {
 		return state, err
 	}
