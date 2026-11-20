@@ -1,10 +1,17 @@
 # Local AI Agent & MCP Workflow Lab
 
-The lab compares three ways to run the same AI chat turn in Go, TypeScript, Python, and Java. The direct loop runs in memory, LangGraph saves checkpoints to PostgreSQL, and Temporal durably schedules work for a separate worker. All four backends use the same React app and local Ollama instance. Each has its own MCP inventory server with the same demo tools.
+A local playground for AI agents, MCP tools, streaming chat, and durable workflows. Compare Go, TypeScript, Python, and Java backends through one React workspace, using local Ollama models and an MCP inventory server for each language.
+
+Run the same chat with a direct loop, a LangGraph state machine backed by PostgreSQL, or a Temporal workflow with a separate worker. Enable streaming on any backend and engine to watch replies develop, then inspect tool calls, token counts, and correlated JSON logs. Temporal streams batched activity-heartbeat previews and can recover unfinished work after a worker restart.
+
+The Java backend also includes a **Restate approval workflow**. Choose inventory items and optional pickup-hour and summary steps, then approve or cancel when an item is unavailable. Restate journals completed steps and the approval decision so the workflow can resume across service restarts.
 
 ## Demo walkthrough
 
-Use the [quick start](#quick-start) to send an inventory question and inspect the MCP calls. Then try the [Temporal worker restart demo](#demo-worker-downtime) to see the same background job wait while the worker is offline, complete when it returns, and surface an in-app notification. The report shows the tool results, model, token counts, and correlated logs.
+- **Compare agents:** Follow the [quick start](#quick-start), select a backend and engine, and ask about inventory and pickup hours.
+- **Watch replies develop:** Enable [streaming chat](#try-incremental-chat-responses) and inspect the completed reply's tool trace, model, token totals, and logs.
+- **Try durable execution:** Run the [Temporal worker restart demo](#demo-worker-downtime), then retrieve the completed background report and its in-app notification.
+- **Make an approval decision:** Open [Restate workflows](#run-a-configurable-inventory-workflow-with-restate), configure the inventory process, and continue or cancel its approval wait.
 
 ## macOS shortcuts
 
